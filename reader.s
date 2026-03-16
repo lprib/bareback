@@ -4,7 +4,7 @@
 .equ	TAG_CONS, 0x0
 .equ	TAG_INT, 0x1
 .equ	TAG_SYMBOL, 0x2
-.equ	TAG_NIL, 0x7
+.equ	TAG_NIL, 0x00000002
 
 .section .bss
 .balign	16

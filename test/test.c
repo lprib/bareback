@@ -96,7 +96,7 @@ int nostd_main(void) {
     assert_eq(Intern_symbol("hello"), tagged_symbol(0));
     assert_eq(Intern_symbol("another"), tagged_symbol(2));
     assert_eq(Intern_symbol("there"), tagged_symbol(1));
-    assert_eq(Intern_symbol("nil"), 0x7);
+    assert_eq(Intern_symbol("nil"), 0x80000002);
 
     // test parsing
     char const* in1 = "(+ 1 2)";

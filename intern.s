@@ -12,7 +12,7 @@
 .equ	SYMBOL_ID, 8
 
 .equ	SYMBOL_TAG, 0x2
-.equ	NIL_TAG, 0x7
+.equ	NIL_TAG, 0x80000002
 Symbol_table:
 .zero	(MAX_SYMBOLS*SYMBOL_ROW_SIZE)
 symbol_names_blob:
