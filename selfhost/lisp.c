@@ -180,6 +180,14 @@ cell eval(cell expr, cell env) {
   return 0;
 }
 
+cell progn(cell bodylist, cell env) {
+  if (cdr(bodylist) == nil)
+    return eval(car(bodylist), env);
+
+  (void)eval(car(bodylist), env);
+  return progn(cdr(bodylist), env);
+}
+
 cell apply(cell proc, cell args) {
   if ((proc & TAG) == TSTAG) {
     cell* heapval = (cell*)(proc & ~TAG);
@@ -189,7 +197,7 @@ cell apply(cell proc, cell args) {
     } else if ((heapval[0] & STAG) == STCLOS) {
       struct closure* closure = (struct closure*)heapval;
       cell envframe = pairlis(closure->argnames, args);
-      return eval(closure->body, cons(envframe, closure->env));
+      return progn(closure->body, cons(envframe, closure->env));
     }
   }
   printf("ERR attempt to call non-procedure: ");
