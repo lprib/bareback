@@ -246,6 +246,7 @@ void skipws() {
 
 cell readexpr();
 cell readlist() {
+  skipws();
   if (eof("while parsing list")) return nil;
   if (*text == ')') { text++; return nil; }
   if (*text == '.') {
@@ -295,7 +296,7 @@ cell readexpr() {
   }
 
   char* symstart = text;
-  while(*text >= '!' && *text <= '~' && *text != '(' && *text != ')')
+  while(*text >= '!' && *text <= '~' && *text != '(' && *text != ')' && *text != '.')
     text++;
   if (text != symstart)
     return intern(symstart, text - symstart);
