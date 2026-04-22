@@ -15,12 +15,12 @@
 #define TSTR    0x5 // string
 #define TSTAG   0x7 // self tagged heap pointer
 
-
 #define STAG    0xff // (mask)
 #define STCLOS  0x00 // lisp closure
 #define STPRIM  0x01 // primitive function
 
 typedef long cell;
+typedef cell (*primitivefn) (cell args);
 
 cell* heap;
 cell* heaptop;
@@ -28,7 +28,6 @@ cell internlist;
 cell nil;
 cell env0;
 
-typedef cell (*primitivefn) (cell args);
 void println(cell c);
 void printexpr(cell c, int iscar);
 
@@ -132,9 +131,16 @@ cell envlookup(cell sym, cell env) {
     return env0;
 
   if (env == nil) {
+    // Ideally we would treat global as just another env. But that breaks
+    // recursive functions because the global environment they capture does not
+    // yet contain themselves
+    cell global = cdr(assoc(sym, env0));
+    if (global != nil)
+      return global;
     printf("ERR unbound var: %s\n", getstr(sym));
     return nil;
   }
+
   cell inthisframe = cdr(assoc(sym, car(env)));
   if (inthisframe != nil)
     return inthisframe;
@@ -396,7 +402,7 @@ void repl() {
     if (!fgets(line, sizeof(line), stdin)) break;
     cell form = readstring(line);
     if (err) continue;
-    println(eval(form, cons(env0, nil)));
+    println(eval(form, nil));
     printf("heap words used: %ld\n", heaptop - heap);
   }
 }
@@ -447,7 +453,7 @@ int main(int argc, char** argv) {
       if (!*text) break;
       cell form = readexpr();
       if (err) { printf("ERR parsing %s\n", argv[i]); return 1; }
-      eval(form, cons(env0, nil));
+      eval(form, nil);
     }
     free(src);
   }
