@@ -230,12 +230,13 @@ int eof(char const *msg) {
 }
 
 void skipws() {
-  while (
-    *text == ' ' ||
-    *text == '\t' ||
-    *text == '\n' ||
-    *text == '\r')
-    text++;
+  for (;;) {
+    if (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r')
+      text++;
+    else if (*text == ';')
+      while (*text && *text != '\n' && *text != '\0') text++;
+    else break;
+  }
 }
 
 cell readexpr();
