@@ -402,6 +402,19 @@ void defprimitive(char* name, primitivefn fn) {
   env0 = cons(nameassoc, env0);
 }
 
+void repl() {
+  for (;;) {
+    printf("> ");
+    fflush(stdout);
+    char line[0x1000];
+    if (!fgets(line, sizeof(line), stdin)) break;
+    cell form = readstring(line);
+    if (err) continue;
+    println(eval(form, cons(env0, nil)));
+    printf("heap words used: %ld\n", heaptop - heap);
+  }
+}
+
 int main(int argc, char** argv) {
   heap = heaptop = malloc(0x8000);
   nil = symc("nil");
@@ -421,6 +434,11 @@ int main(int argc, char** argv) {
   defprimitive("eq", eq);
 
   for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "repl")) {
+      repl();
+      return 0;
+    }
+
     FILE* f = fopen(argv[i], "r");
     if (!f) { printf("cannot open %s\n", argv[i]); return 1; }
     fseek(f, 0, SEEK_END);
@@ -440,18 +458,6 @@ int main(int argc, char** argv) {
       eval(form, cons(env0, nil));
     }
     free(src);
-    return 0;
-  }
-
-  for (;;) {
-    printf("> ");
-    fflush(stdout);
-    char line[0x1000];
-    if (!fgets(line, sizeof(line), stdin)) break;
-    cell form = readstring(line);
-    if (err) continue;
-    println(eval(form, cons(env0, nil)));
-    printf("heap words used: %ld\n", heaptop - heap);
   }
 }
 
