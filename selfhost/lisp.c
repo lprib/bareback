@@ -29,7 +29,7 @@ cell nil;
 cell env0;
 
 void println(cell c);
-void printexpr(cell c, int iscar);
+void printexpr(cell c);
 
 void* alloc(int cells) {
   cell* p = heaptop;
@@ -314,22 +314,27 @@ cell readstring(char* s) {
   return err ? nil : expr;
 }
 
-void printexpr(cell c, int iscar) {
+void printlist(cell c) {
+  printexpr(car(c));
+  cell thecdr = cdr(c);
+  if (thecdr == nil) {
+    //end of proper list
+  } else if ((thecdr & TAG) == TCONS) {
+    printf(" ");
+    printlist(thecdr);
+  } else {
+    printf(" . ");
+    printexpr(thecdr);
+  }
+}
+
+void printexpr(cell c) {
   if ((c & FIXTAG) == FIX) {
     printf("%ld", c >> 1);
   } else if ((c & TAG) == TCONS) {
-    cell thecar = car(c);
-    cell thecdr = cdr(c);
-    if (iscar)
-      printf("(");
-    printexpr(thecar, 1);
-    if ((thecdr & TAG) != TCONS)
-      printf(" . ");
-    else
-      printf(" ");
-    printexpr(thecdr, 0);
-    if (iscar)
-      printf(")");
+    printf("(");
+    printlist(c);
+    printf(")");
   } else if ((c & TAG) == TSTR) {
     printf("\"%s\"", getstr(c));
   } else if ((c & TAG) == TSYM) {
@@ -339,24 +344,21 @@ void printexpr(cell c, int iscar) {
     struct closure* closure;
     switch(heapval[0] & STAG) {
       case STPRIM:
-        printf("<primitive>");
+        printf("#<prim>");
         break;
       case STCLOS:
          closure = (struct closure*)heapval;
-         printf("<closure ");
-         printexpr(closure->argnames, 1);
-         printf(" ");
-         printexpr(closure->body, 1);
-         printf(" env=");
-         printexpr(closure->env, 1);
+         printf("#<clos ");
+         printexpr(closure->argnames);
          printf(">");
         break;
     }
   }
 }
 
+
 void println(cell c) {
-  printexpr(c, 1);
+  printexpr(c);
   printf("\n");
 }
 
