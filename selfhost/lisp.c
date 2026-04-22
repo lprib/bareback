@@ -69,8 +69,7 @@ cell cdr(cell cons) {
 }
 
 #define cadr(_cons) car(cdr(_cons))
-
-cell fix(int n) { return (cell)(n << 1); }
+#define fix(n) ((cell)((n) << 1))
 
 #define strc(s) str(s, strlen(s))
 cell str(char* s, int len) {
@@ -143,8 +142,7 @@ cell envlookup(cell sym, cell env) {
 }
 
 cell pairlis(cell ks, cell vs) {
-  if (car(ks) == nil)
-    return nil;
+  if (ks == nil) return nil;
   return cons(cons(car(ks), car(vs)), pairlis(cdr(ks), cdr(vs)));
 }
 
@@ -168,6 +166,15 @@ cell evalcond(cell branches, cell env) {
 
 cell apply(cell proc, cell args);
 
+cell progn(cell bodylist, cell env) {
+  if (cdr(bodylist) == nil)
+    return eval(car(bodylist), env);
+
+  (void)eval(car(bodylist), env);
+  return progn(cdr(bodylist), env);
+}
+
+
 cell eval(cell expr, cell env) {
   if ((expr & FIXTAG) == FIX) {
     return expr;
@@ -183,19 +190,13 @@ cell eval(cell expr, cell env) {
       return closure(cadr(expr), cdr(cdr(expr)), env);
     } else if (op == internc("cond")) {
       return evalcond(cdr(expr), env);
+    } else if (op == internc("progn")) {
+      return progn(cdr(expr), env);
     } else {
       return apply(eval(car(expr), env), evallist(cdr(expr), env));
     }
   }
   return 0;
-}
-
-cell progn(cell bodylist, cell env) {
-  if (cdr(bodylist) == nil)
-    return eval(car(bodylist), env);
-
-  (void)eval(car(bodylist), env);
-  return progn(cdr(bodylist), env);
 }
 
 cell apply(cell proc, cell args) {
@@ -352,55 +353,39 @@ void println(cell c) {
   printf("\n");
 }
 
+// primitives
 cell plus(cell args) {
-  if (args == nil)
-    return 0;
-  else
-    return (((car(args) >> 1) + (plus(cdr(args)) >> 1)) << 1);
+  if (args == nil) return 0;
+  else return fix((car(args)>>1) + (plus(cdr(args))>>1));
 }
-
-cell minus(cell args) {
-  return ((car(args) >> 1) - (cadr(args) >> 1)) << 1;
-}
-
-cell consprim(cell args) {
-  return cons(car(args), cadr(args));
-}
-
+cell minus(cell args) { return fix((car(args)>>1) - (cadr(args)>>1)); }
+cell consprim(cell args) { return cons(car(args), cadr(args)); }
 cell setcar(cell args) {
   assert(istype(car(args), TCONS));
   ((struct cons*)(car(args) & ~TAG))->car = cadr(args);
   return car(args);
 }
-
 cell setcdr(cell args) {
   assert(istype(car(args), TCONS));
   ((struct cons*)(car(args) & ~TAG))->cdr = cadr(args);
   return car(args);
 }
-
 cell print(cell args) {
   println(car(args));
   return nil;
 }
-
-cell assocprim(cell args) {
-  return assoc(car(args), cadr(args));
-}
-
+cell assocprim(cell args) { return assoc(car(args), cadr(args)); }
 cell def(cell args) {
   env0 = cons(cons(car(args), cadr(args)), env0);
   return nil;
 }
-
-cell eq(cell args) {
-  return (car(args) == cadr(args)) ? fix(1) : nil;
-}
+cell eq(cell args) { return (car(args) == cadr(args)) ? fix(1) : nil; }
+cell pairlisprim(cell args) { return pairlis(car(args), cadr(args)); }
 
 void defprimitive(char* name, primitivefn fn) {
-  cell nameassoc = cons(internc(name), prim(fn));
-  env0 = cons(nameassoc, env0);
+  env0 = cons(cons(internc(name), prim(fn)), env0);
 }
+
 
 void repl() {
   for (;;) {
@@ -432,6 +417,12 @@ int main(int argc, char** argv) {
   defprimitive("assoc", assocprim);
   defprimitive("def", def);
   defprimitive("eq", eq);
+  defprimitive("pairlis", pairlisprim);
+
+  if (argc <= 1) {
+    printf("Nothing to do. `%s repl` for repl\n", argv[0]);
+    return 0;
+  }
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "repl")) {
