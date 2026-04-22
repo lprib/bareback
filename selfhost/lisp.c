@@ -424,6 +424,7 @@ int main(int argc, char** argv) {
       if (err) { printf("ERR parsing %s\n", argv[i]); return 1; }
       eval(form, cons(env0, nil));
     }
+    free(src);
     return 0;
   }
 
