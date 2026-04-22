@@ -1,4 +1,7 @@
-(def 'sayhi
-  (\ () (print 'hi)))
+(def 'seq
+  (\ (n)
+    (cond
+      ((eq n 0) (cons 0 nil))
+      (1 (cons n (seq (- n 1)))))))
 
-(sayhi)
+(seq 5)

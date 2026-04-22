@@ -128,6 +128,7 @@ cell assoc(cell key, cell alist) {
 }
 
 cell envlookup(cell sym, cell env) {
+  if (sym == nil) return nil;
   if (sym == internc("$"))
     return env0;
 
@@ -158,6 +159,13 @@ cell evallist(cell list, cell env) {
   }
 }
 
+cell evalcond(cell branches, cell env) {
+  if (branches == nil) return nil;
+  if (eval(car(car(branches)), env) != nil)
+    return eval(cadr(car(branches)), env);
+  return evalcond(cdr(branches), env);
+}
+
 cell apply(cell proc, cell args);
 
 cell eval(cell expr, cell env) {
@@ -172,7 +180,9 @@ cell eval(cell expr, cell env) {
     if (op == internc("quote")) {
       return cadr(expr);
     } else if (op == internc("\\")) {
-      return closure(cadr(expr), cadr(cdr(expr)), env);
+      return closure(cadr(expr), cdr(cdr(expr)), env);
+    } else if (op == internc("cond")) {
+      return evalcond(cdr(expr), env);
     } else {
       return apply(eval(car(expr), env), evallist(cdr(expr), env));
     }
@@ -349,6 +359,10 @@ cell plus(cell args) {
     return (((car(args) >> 1) + (plus(cdr(args)) >> 1)) << 1);
 }
 
+cell minus(cell args) {
+  return ((car(args) >> 1) - (cadr(args) >> 1)) << 1;
+}
+
 cell consprim(cell args) {
   return cons(car(args), cadr(args));
 }
@@ -395,6 +409,7 @@ int main(int argc, char** argv) {
   env0 = nil;
 
   defprimitive("+", plus);
+  defprimitive("-", minus);
   defprimitive("car", car);
   defprimitive("cdr", cdr);
   defprimitive("cons", consprim);
