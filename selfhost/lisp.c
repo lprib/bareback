@@ -117,12 +117,11 @@ cell closure(cell argnames, cell body, cell env) {
 
 
 cell assoc(cell key, cell alist) {
+  if (alist == nil)
+    return nil;
   if (key == car(car(alist)))
     return car(alist);
-  else if (cdr(alist) == nil)
-    return nil;
-  else
-    return assoc(key, cdr(alist));
+  return assoc(key, cdr(alist));
 }
 
 cell envlookup(cell sym, cell env) {
@@ -134,16 +133,16 @@ cell envlookup(cell sym, cell env) {
     // Ideally we would treat global as just another env. But that breaks
     // recursive functions because the global environment they capture does not
     // yet contain themselves
-    cell global = cdr(assoc(sym, env0));
-    if (global != nil)
-      return global;
+    cell globalpair = assoc(sym, env0);
+    if (globalpair != nil)
+      return cdr(globalpair);
     printf("ERR unbound var: %s\n", getstr(sym));
     return nil;
   }
 
-  cell inthisframe = cdr(assoc(sym, car(env)));
-  if (inthisframe != nil)
-    return inthisframe;
+  cell localframepair = assoc(sym, car(env));
+  if (localframepair != nil)
+    return cdr(localframepair);
   return envlookup(sym, cdr(env));
 }
 
