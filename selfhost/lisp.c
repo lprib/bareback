@@ -369,6 +369,8 @@ cell plus(cell args) {
 }
 cell minus(cell args) { return fix((car(args)>>1) - (cadr(args)>>1)); }
 cell consprim(cell args) { return cons(car(args), cadr(args)); }
+cell carprim(cell args) { return car(car(args)); }
+cell cdrprim(cell args) { return cdr(car(args)); }
 cell setcar(cell args) {
   assert(istype(car(args), TCONS));
   ((struct cons*)(car(args) & ~TAG))->car = cadr(args);
@@ -417,8 +419,8 @@ int main(int argc, char** argv) {
 
   defprimitive("+", plus);
   defprimitive("-", minus);
-  defprimitive("car", car);
-  defprimitive("cdr", cdr);
+  defprimitive("car", carprim);
+  defprimitive("cdr", cdrprim);
   defprimitive("cons", consprim);
   defprimitive("print", print);
   defprimitive("setcar", setcar);
