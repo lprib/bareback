@@ -59,7 +59,6 @@ char* allocbytes(int bytes) {
 }
 
 void gc(struct gcframe* frame) {
-  return;
   if (!frame)
     return;
   if (frame == topgcframe)
@@ -223,9 +222,6 @@ cell progn(cell bodylist, cell env) {
 
 
 cell eval(cell expr, cell env) {
-  GCPROTECT(2, &expr, &env);
-  gc(topgcframe);
-
   cell res = nil;
 
   if ((expr & FIXTAG) == FIX) {
@@ -235,25 +231,26 @@ cell eval(cell expr, cell env) {
   } else if ((expr & TAG) == TSYM) {
     res = envlookup(expr, env);
   } else if ((expr & TAG) == TCONS) {
-    cell op = car(expr);
-    if (op == internc("quote")) {
+    cell fn;
+    GCPROTECT(3, &expr, &env, &fn);
+    gc(topgcframe);
+
+    if (car(expr) == internc("quote")) {
       res = cadr(expr);
-    } else if (op == internc("fn")) {
+    } else if (car(expr) == internc("fn")) {
       res = closure(cadr(expr), cdr(cdr(expr)), env);
-    } else if (op == internc("cond")) {
+    } else if (car(expr) == internc("cond")) {
       res = evalcond(cdr(expr), env);
-    } else if (op == internc("progn")) {
+    } else if (car(expr) == internc("progn")) {
       res = progn(cdr(expr), env);
     } else {
-      // needs to be in separate steps so that fn doesn't get invalidated by
-      // potential GC while evaluating args
-      cell fn = eval(car(expr), env);
+      fn = eval(car(expr), env);
       cell args = evallist(cdr(expr), env);
       res = apply(fn, args);
     }
+    ENDGCPROTECT();
   }
 
-  ENDGCPROTECT();
   return res;
 }
 
