@@ -59,6 +59,7 @@ char* allocbytes(int bytes) {
 }
 
 void gc(struct gcframe* frame) {
+  return;
   if (!frame)
     return;
   if (frame == topgcframe)
@@ -111,7 +112,7 @@ cell str(char* s, int len) {
 cell sym(char* s, int len) { return (str(s, len) & ~TAG) | TSYM; }
 
 char *getstr(cell strcell) {
-  assert(istype(strcell, TCONS) || istype(strcell, TSYM));
+  assert(istype(strcell, TSTR) || istype(strcell, TSYM));
   return (char*)(strcell & ~TAG);
 }
 
@@ -293,7 +294,7 @@ void skipws(void) {
     if (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r')
       text++;
     else if (*text == ';')
-      while (*text && *text != '\n' && *text != '\0') text++;
+      while (*text && *text != '\n') text++;
     else break;
   }
 }
@@ -334,19 +335,28 @@ cell readexpr(void) {
     return list;
   }
 
-  int fix = 0;
-  int gotfix = 0;
-  while (*text >= '0' && *text <= '9') {
-    fix = (fix * 10) + (*text++ - '0');
-    gotfix = 1;
+  if (*text >= '0' && *text <= '9') {
+    int fix = 0;
+    while (*text >= '0' && *text <= '9') {
+      fix = (fix * 10) + (*text++ - '0');
+    }
+    return (cell)(fix << 1);
   }
-  if (gotfix) return (cell)(fix << 1);
 
   if (*text == '\'') {
     text++;
     cell inner = readexpr();
     if (err) return nil;
     return cons(internc("quote"), cons(inner, nil));
+  }
+
+  if (*text == '"') {
+    char* start = ++text;
+    while(*text && *text != '"') text++;
+    cell strlit = str(start, text - start);
+    if (eof("in string literal")) return nil;
+    text++;
+    return strlit;
   }
 
   char* symstart = text;
@@ -410,16 +420,6 @@ void printexpr(cell c) {
   }
 }
 
-void printreachable(void) {
-  printf("    ");
-  printexpr(nil);
-  printf("\n    ");
-  printexpr(internlist);
-  printf("\n    ");
-  printexpr(globalenv);
-  printf("\n");
-}
-
 void println(cell c) {
   printexpr(c);
   printf("\n");
@@ -475,8 +475,6 @@ void repl(void) {
     if (err) continue;
     println(eval(form, nil));
     printf("heap: %ld/%d\n", heaptop - heap, HEAPSIZE);
-    printf("reachable: \n");
-    printreachable();
   }
 }
 
