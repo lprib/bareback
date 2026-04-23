@@ -22,6 +22,13 @@
 typedef long cell;
 typedef cell (*primitivefn) (cell args);
 
+struct gcframe {
+  struct gcframe* parent;
+  int cnt;
+  cell** localptrs;
+};
+
+#define HEAPSIZE 0x10000
 cell* heap;
 cell* heaptop;
 cell internlist;
@@ -191,7 +198,7 @@ cell eval(cell expr, cell env) {
     cell op = car(expr);
     if (op == internc("quote")) {
       return cadr(expr);
-    } else if (op == internc("\\")) {
+    } else if (op == internc("fn")) {
       return closure(cadr(expr), cdr(cdr(expr)), env);
     } else if (op == internc("cond")) {
       return evalcond(cdr(expr), env);
@@ -222,6 +229,8 @@ cell apply(cell proc, cell args) {
   return nil;
 }
 
+// READER/WRITER
+
 char* text;
 int err;
 
@@ -234,7 +243,7 @@ int eof(char const *msg) {
   return 0;
 }
 
-void skipws() {
+void skipws(void) {
   for (;;) {
     if (*text == ' ' || *text == '\t' || *text == '\n' || *text == '\r')
       text++;
@@ -244,8 +253,8 @@ void skipws() {
   }
 }
 
-cell readexpr();
-cell readlist() {
+cell readexpr(void);
+cell readlist(void) {
   skipws();
   if (eof("while parsing list")) return nil;
   if (*text == ')') { text++; return nil; }
@@ -271,7 +280,7 @@ cell readlist() {
   return cons(car, cdr);
 }
 
-cell readexpr() {
+cell readexpr(void) {
   skipws();
   if (*text == '(') {
     text++;
@@ -356,49 +365,62 @@ void printexpr(cell c) {
   }
 }
 
+void printreachable(void) {
+  printf("    ");
+  printexpr(nil);
+  printf("\n    ");
+  printexpr(internlist);
+  printf("\n    ");
+  printexpr(env0);
+  printf("\n");
+}
 
 void println(cell c) {
   printexpr(c);
   printf("\n");
 }
 
-// primitives
-cell plus(cell args) {
+// PRIMITIVES
+
+cell pplus(cell args) {
   if (args == nil) return 0;
-  else return fix((car(args)>>1) + (plus(cdr(args))>>1));
+  else return fix((car(args)>>1) + (pplus(cdr(args))>>1));
 }
-cell minus(cell args) { return fix((car(args)>>1) - (cadr(args)>>1)); }
-cell consprim(cell args) { return cons(car(args), cadr(args)); }
-cell carprim(cell args) { return car(car(args)); }
-cell cdrprim(cell args) { return cdr(car(args)); }
-cell setcar(cell args) {
+cell ptimes(cell args) {
+  if (args == nil) return 0;
+  else return fix((car(args)>>1) * (pplus(cdr(args))>>1));
+}
+cell pminus(cell args) { return fix((car(args)>>1) - (cadr(args)>>1)); }
+cell pcons(cell args) { return cons(car(args), cadr(args)); }
+cell pcar(cell args) { return car(car(args)); }
+cell pcdr(cell args) { return cdr(car(args)); }
+cell psetcar(cell args) {
   assert(istype(car(args), TCONS));
   ((struct cons*)(car(args) & ~TAG))->car = cadr(args);
   return car(args);
 }
-cell setcdr(cell args) {
+cell psetcdr(cell args) {
   assert(istype(car(args), TCONS));
   ((struct cons*)(car(args) & ~TAG))->cdr = cadr(args);
   return car(args);
 }
-cell print(cell args) {
+cell pprint(cell args) {
   println(car(args));
   return nil;
 }
-cell assocprim(cell args) { return assoc(car(args), cadr(args)); }
-cell def(cell args) {
+cell passoc(cell args) { return assoc(car(args), cadr(args)); }
+cell pdef(cell args) {
   env0 = cons(cons(car(args), cadr(args)), env0);
   return nil;
 }
-cell eq(cell args) { return (car(args) == cadr(args)) ? fix(1) : nil; }
-cell pairlisprim(cell args) { return pairlis(car(args), cadr(args)); }
+cell peq(cell args) { return (car(args) == cadr(args)) ? fix(1) : nil; }
+cell ppairlis(cell args) { return pairlis(car(args), cadr(args)); }
 
 void defprimitive(char* name, primitivefn fn) {
   env0 = cons(cons(internc(name), prim(fn)), env0);
 }
 
-
-void repl() {
+void repl(void) {
   for (;;) {
     printf("> ");
     fflush(stdout);
@@ -407,28 +429,31 @@ void repl() {
     cell form = readstring(line);
     if (err) continue;
     println(eval(form, nil));
-    printf("heap words used: %ld\n", heaptop - heap);
+    printf("heap: %ld/%d\n", heaptop - heap, HEAPSIZE);
+    printf("reachable: \n");
+    printreachable();
   }
 }
 
 int main(int argc, char** argv) {
-  heap = heaptop = malloc(0x8000);
+  heap = heaptop = malloc(HEAPSIZE);
   nil = symc("nil");
   internlist = cons(nil, nil);
   env0 = nil;
 
-  defprimitive("+", plus);
-  defprimitive("-", minus);
-  defprimitive("car", carprim);
-  defprimitive("cdr", cdrprim);
-  defprimitive("cons", consprim);
-  defprimitive("print", print);
-  defprimitive("setcar", setcar);
-  defprimitive("setcdr", setcdr);
-  defprimitive("assoc", assocprim);
-  defprimitive("def", def);
-  defprimitive("eq", eq);
-  defprimitive("pairlis", pairlisprim);
+  defprimitive("+", pplus);
+  defprimitive("-", pminus);
+  defprimitive("*", ptimes);
+  defprimitive("car", pcar);
+  defprimitive("cdr", pcdr);
+  defprimitive("cons", pcons);
+  defprimitive("print", pprint);
+  defprimitive("setcar", psetcar);
+  defprimitive("setcdr", psetcdr);
+  defprimitive("assoc", passoc);
+  defprimitive("def", pdef);
+  defprimitive("eq", peq);
+  defprimitive("pairlis", ppairlis);
 
   if (argc <= 1) {
     printf("Nothing to do. `%s repl` for repl\n", argv[0]);
