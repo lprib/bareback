@@ -33,7 +33,16 @@ cell* heap;
 cell* heaptop;
 cell internlist;
 cell nil;
-cell env0;
+cell globalenv;
+struct gcframe* topgcframe = NULL;
+
+#define GCPROTECT(_n, ...) \
+  cell* _localptrs[_n] = { __VA_ARGS__ }; \
+  struct gcframe _frame = { topgcframe, _n, _localptrs }; \
+  topgcframe = &_frame;
+
+#define ENDGCPROTECT() topgcframe = _frame.parent;
+
 
 void println(cell c);
 void printexpr(cell c);
@@ -47,6 +56,20 @@ void* alloc(int cells) {
 
 char* allocbytes(int bytes) {
   return alloc((bytes + sizeof(cell) - 1) / sizeof(cell));
+}
+
+void gc(struct gcframe* frame) {
+  if (!frame)
+    return;
+  if (frame == topgcframe)
+    printf("====================\nGC invoked\n");
+  printf("frame:\n");
+  for (int i = 0; i < frame->cnt; i++) {
+    printf("   ");
+    printexpr(*frame->localptrs[i]);
+    printf("\n");
+  }
+  gc(frame->parent);
 }
 
 struct cons { cell car, cdr; };
@@ -134,13 +157,13 @@ cell assoc(cell key, cell alist) {
 cell envlookup(cell sym, cell env) {
   if (sym == nil) return nil;
   if (sym == internc("$"))
-    return env0;
+    return globalenv;
 
   if (env == nil) {
     // Ideally we would treat global as just another env. But that breaks
     // recursive functions because the global environment they capture does not
     // yet contain themselves
-    cell globalpair = assoc(sym, env0);
+    cell globalpair = assoc(sym, globalenv);
     if (globalpair != nil)
       return cdr(globalpair);
     printf("ERR unbound var: %s\n", getstr(sym));
@@ -160,13 +183,20 @@ cell pairlis(cell ks, cell vs) {
 
 cell eval(cell expr, cell env);
 
+
 cell evallist(cell list, cell env) {
+  cell head = nil;
+  cell res = nil;
+  GCPROTECT(3, &list, &env, &head);
+
   if (list != nil) {
-    cell res = eval(car(list), env);
-    return cons(res, evallist(cdr(list), env));
-  } else {
-    return nil;
+    head = eval(car(list), env);
+    cell tail = evallist(cdr(list), env);
+    res = cons(head, tail);
   }
+
+  ENDGCPROTECT();
+  return res;
 }
 
 cell evalcond(cell branches, cell env) {
@@ -179,36 +209,51 @@ cell evalcond(cell branches, cell env) {
 cell apply(cell proc, cell args);
 
 cell progn(cell bodylist, cell env) {
-  if (cdr(bodylist) == nil)
+  if (cdr(bodylist) == nil) {
+    // base case requires no gc protect due to tail call
     return eval(car(bodylist), env);
+  }
 
+  GCPROTECT(2, &bodylist, &env);
   (void)eval(car(bodylist), env);
+  ENDGCPROTECT();
   return progn(cdr(bodylist), env);
 }
 
 
 cell eval(cell expr, cell env) {
+  GCPROTECT(2, &expr, &env);
+  gc(topgcframe);
+
+  cell res = nil;
+
   if ((expr & FIXTAG) == FIX) {
-    return expr;
+    res = expr;
   } else if ((expr & TAG) == TSTR) {
-    return expr;
+    res = expr;
   } else if ((expr & TAG) == TSYM) {
-    return envlookup(expr, env);
+    res = envlookup(expr, env);
   } else if ((expr & TAG) == TCONS) {
     cell op = car(expr);
     if (op == internc("quote")) {
-      return cadr(expr);
+      res = cadr(expr);
     } else if (op == internc("fn")) {
-      return closure(cadr(expr), cdr(cdr(expr)), env);
+      res = closure(cadr(expr), cdr(cdr(expr)), env);
     } else if (op == internc("cond")) {
-      return evalcond(cdr(expr), env);
+      res = evalcond(cdr(expr), env);
     } else if (op == internc("progn")) {
-      return progn(cdr(expr), env);
+      res = progn(cdr(expr), env);
     } else {
-      return apply(eval(car(expr), env), evallist(cdr(expr), env));
+      // needs to be in separate steps so that fn doesn't get invalidated by
+      // potential GC while evaluating args
+      cell fn = eval(car(expr), env);
+      cell args = evallist(cdr(expr), env);
+      res = apply(fn, args);
     }
   }
-  return 0;
+
+  ENDGCPROTECT();
+  return res;
 }
 
 cell apply(cell proc, cell args) {
@@ -371,7 +416,7 @@ void printreachable(void) {
   printf("\n    ");
   printexpr(internlist);
   printf("\n    ");
-  printexpr(env0);
+  printexpr(globalenv);
   printf("\n");
 }
 
@@ -410,14 +455,14 @@ cell pprint(cell args) {
 }
 cell passoc(cell args) { return assoc(car(args), cadr(args)); }
 cell pdef(cell args) {
-  env0 = cons(cons(car(args), cadr(args)), env0);
+  globalenv = cons(cons(car(args), cadr(args)), globalenv);
   return nil;
 }
 cell peq(cell args) { return (car(args) == cadr(args)) ? fix(1) : nil; }
 cell ppairlis(cell args) { return pairlis(car(args), cadr(args)); }
 
 void defprimitive(char* name, primitivefn fn) {
-  env0 = cons(cons(internc(name), prim(fn)), env0);
+  globalenv = cons(cons(internc(name), prim(fn)), globalenv);
 }
 
 void repl(void) {
@@ -439,7 +484,8 @@ int main(int argc, char** argv) {
   heap = heaptop = malloc(HEAPSIZE);
   nil = symc("nil");
   internlist = cons(nil, nil);
-  env0 = nil;
+  globalenv = nil;
+  GCPROTECT(3, &nil, &internlist, &globalenv);
 
   defprimitive("+", pplus);
   defprimitive("-", pminus);
