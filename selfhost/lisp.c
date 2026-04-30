@@ -25,61 +25,120 @@ typedef cell (*primitivefn) (cell args);
 struct gcframe {
   struct gcframe* parent;
   int cnt;
-  cell** localptrs;
+  cell** roots;
 };
 
-#define HEAPSIZE 0x10000
+#define HEAPSIZE 0x100000
+
+cell* heapa;
+cell* heapb;
+
 cell* heap;
 cell* heaptop;
+
+cell* toheap;
+cell* toheaptop;
+
 cell internlist;
 cell nil;
 cell globalenv;
+
 struct gcframe* topgcframe = NULL;
 
-#define GCPROTECT(_n, ...) \
-  cell* _localptrs[_n] = { __VA_ARGS__ }; \
-  struct gcframe _frame = { topgcframe, _n, _localptrs }; \
+#define GCPROTECT(...) \
+  cell* _roots[] = { __VA_ARGS__ }; \
+  struct gcframe _frame = { topgcframe, sizeof(_roots)/sizeof(_roots[0]), _roots }; \
   topgcframe = &_frame;
 
 #define ENDGCPROTECT() topgcframe = _frame.parent;
 
+unsigned int forwardmap[HEAPSIZE / HEAPALIGN / 32] = {0};
+
+cell* greystack[1000];
+cell** greystacktop = greystack;
 
 void println(cell c);
 void printexpr(cell c);
-
-void* alloc(int cells) {
-  cell* p = heaptop;
-  heaptop += cells;
-  heaptop = (cell*)(((cell)heaptop + HEAPALIGN - 1) & ~(HEAPALIGN - 1));
-  return p;
-}
-
-char* allocbytes(int bytes) {
-  return alloc((bytes + sizeof(cell) - 1) / sizeof(cell));
-}
-
-void gc(struct gcframe* frame) {
-  if (!frame)
-    return;
-  if (frame == topgcframe)
-    printf("====================\nGC invoked\n");
-  printf("frame:\n");
-  for (int i = 0; i < frame->cnt; i++) {
-    printf("   ");
-    printexpr(*frame->localptrs[i]);
-    printf("\n");
-  }
-  gc(frame->parent);
-}
 
 struct cons { cell car, cdr; };
 struct primitive { cell stag; primitivefn fn; };
 struct closure { cell stag, argnames, body, env; };
 
-#define istype(_cell, _type) ((_cell & TAG) == _type)
+#define istype(_cell, _type) (((_cell) & TAG) == (_type))
+
+#define cellasptr(_cell) ((_cell) & ~TAG)
+
+void* alloc(int cells, cell** whichheaptop) {
+  cell* p = *whichheaptop;
+  *whichheaptop += cells;
+  *whichheaptop = (cell*)(((cell)(*whichheaptop) + HEAPALIGN - 1) & ~(HEAPALIGN - 1));
+  return p;
+}
+
+char* allocbytes(int bytes, cell** whichheaptop) {
+  return alloc((bytes + sizeof(cell) - 1) / sizeof(cell), whichheaptop);
+}
+
+int isforwarded(cell* inheap) {
+  int slot = ((void*)inheap - (void*)heap) / HEAPALIGN;
+  return (forwardmap[slot/32] & (1u << (slot%32))) != 0;
+}
+
+void setforwarded(cell* inheap, cell* to) {
+  *inheap = (cell)(to);
+  int slot = ((void*)inheap - (void*)heap) / HEAPALIGN;
+  forwardmap[slot/32] |= (1u << (slot%32));
+}
+
+void moveimm(cell* imm) {
+  cell* pointer = (cell*)cellasptr(*imm);
+  if (istype(*imm, TCONS)) {
+    if (isforwarded(pointer)) {
+      cell fwdptrvalue = *pointer;
+      // edit the imm in-place to point where the fwd pointer points
+      *imm &= TAG;
+      *imm |= fwdptrvalue;
+      return;
+    }
+    printf("moveimm cons");
+    printexpr(*imm);
+    printf("\n");
+    struct cons* oldcons = (struct cons*)(cellasptr(*imm));
+    struct cons* newcons = alloc(2, &toheaptop);
+    newcons->car = oldcons->car;
+    newcons->cdr = oldcons->cdr;
+    *greystacktop++ = &newcons->cdr;
+    *greystacktop++ = &newcons->car;
+    setforwarded(pointer, &newcons->car);
+    *imm &= TAG;
+    *imm |= (cell)(&newcons->car);
+  }
+}
+
+void gcframe(struct gcframe* frame) {
+  if (!frame) return;
+  for (int i = 0; i < frame->cnt; i++) {
+    cell* root = frame->roots[i];
+    *greystacktop++ = root;
+    while (greystacktop > greystack)
+      moveimm(*(--greystacktop));
+  }
+  gcframe(frame->parent);
+}
+
+void gc(void) {
+  //toheaptop = (heap == heapa) ? heapb : heapa;
+  printf("====================\nGC invoked\n");
+  gcframe(topgcframe);
+  heap = (heap == heapa) ? heapb : heapa;
+  toheap = (heap == heapa) ? heapb : heapa;
+  heaptop = toheaptop; // start allocating where GC left off
+  toheaptop = toheap; // discard everything in toheap
+}
+
 
 cell cons(cell car, cell cdr) {
-  struct cons* cns = alloc(sizeof(struct cons) / sizeof(cell));
+  struct cons* cns = alloc(sizeof(struct cons) / sizeof(cell), &heaptop);
   cns->car = car;
   cns->cdr = cdr;
   return ((cell)cns) | TCONS;
@@ -88,13 +147,13 @@ cell cons(cell car, cell cdr) {
 cell car(cell cons) {
   if (cons == nil) return nil;
   assert(istype(cons, TCONS));
-  return ((struct cons*)(cons & ~(TAG)))->car;
+  return ((struct cons*)cellasptr(cons))->car;
 }
 
 cell cdr(cell cons) {
   if (cons == nil) return nil;
   assert(istype(cons, TCONS));
-  return ((struct cons*)(cons & ~(TAG)))->cdr;
+  return ((struct cons*)cellasptr(cons))->cdr;
 }
 
 #define cadr(_cons) car(cdr(_cons))
@@ -102,17 +161,17 @@ cell cdr(cell cons) {
 
 #define strc(s) str(s, strlen(s))
 cell str(char* s, int len) {
-  char* a = allocbytes(len);
+  char* a = allocbytes(len, &heaptop);
   memcpy(a, s, len);
   return (cell)(a) | TSTR;
 }
 
 #define symc(s) sym(s, strlen(s))
-cell sym(char* s, int len) { return (str(s, len) & ~TAG) | TSYM; }
+cell sym(char* s, int len) { return cellasptr(str(s, len)) | TSYM; }
 
 char *getstr(cell strcell) {
   assert(istype(strcell, TSTR) || istype(strcell, TSYM));
-  return (char*)(strcell & ~TAG);
+  return (char*)cellasptr(strcell);
 }
 
 #define internc(s) intern(s, strlen(s))
@@ -130,14 +189,14 @@ cell intern(char* s, int len) {
 }
 
 cell prim(primitivefn fn) {
-  struct primitive* primitive = alloc(sizeof(struct primitive) / sizeof(cell));
+  struct primitive* primitive = alloc(sizeof(struct primitive) / sizeof(cell), &heaptop);
   primitive->stag = STPRIM;
   primitive->fn = fn;
   return (cell)primitive | TSTAG;
 }
 
 cell closure(cell argnames, cell body, cell env) {
-  struct closure* closure = alloc(sizeof(struct closure) / sizeof(cell));
+  struct closure* closure = alloc(sizeof(struct closure) / sizeof(cell), &heaptop);
   closure->stag = STCLOS;
   closure->argnames = argnames;
   closure->body = body;
@@ -187,7 +246,7 @@ cell eval(cell expr, cell env);
 cell evallist(cell list, cell env) {
   cell head = nil;
   cell res = nil;
-  GCPROTECT(3, &list, &env, &head);
+  GCPROTECT(&list, &env, &head);
 
   if (list != nil) {
     head = eval(car(list), env);
@@ -214,7 +273,7 @@ cell progn(cell bodylist, cell env) {
     return eval(car(bodylist), env);
   }
 
-  GCPROTECT(2, &bodylist, &env);
+  GCPROTECT(&bodylist, &env);
   (void)eval(car(bodylist), env);
   ENDGCPROTECT();
   return progn(cdr(bodylist), env);
@@ -231,9 +290,9 @@ cell eval(cell expr, cell env) {
   } else if ((expr & TAG) == TSYM) {
     res = envlookup(expr, env);
   } else if ((expr & TAG) == TCONS) {
-    cell fn;
-    GCPROTECT(3, &expr, &env, &fn);
-    gc(topgcframe);
+    cell fn = nil;
+    GCPROTECT(&expr, &env, &fn);
+    gc();
 
     if (car(expr) == internc("quote")) {
       res = cadr(expr);
@@ -256,7 +315,7 @@ cell eval(cell expr, cell env) {
 
 cell apply(cell proc, cell args) {
   if ((proc & TAG) == TSTAG) {
-    cell* heapval = (cell*)(proc & ~TAG);
+    cell* heapval = (cell*)cellasptr(proc);
     if ((heapval[0] & STAG) == STPRIM) {
       struct primitive* primitive = (struct primitive*)heapval;
       return primitive->fn(args);
@@ -401,7 +460,7 @@ void printexpr(cell c) {
   } else if ((c & TAG) == TSYM) {
     printf("%s", getstr(c));
   } else if ((c & TAG) == TSTAG) {
-    cell* heapval = (cell*)(c & ~TAG);
+    cell* heapval = (cell*)cellasptr(c);
     struct closure* closure;
     switch(heapval[0] & STAG) {
       case STPRIM:
@@ -438,12 +497,12 @@ cell pcar(cell args) { return car(car(args)); }
 cell pcdr(cell args) { return cdr(car(args)); }
 cell psetcar(cell args) {
   assert(istype(car(args), TCONS));
-  ((struct cons*)(car(args) & ~TAG))->car = cadr(args);
+  ((struct cons*)cellasptr(car(args)))->car = cadr(args);
   return car(args);
 }
 cell psetcdr(cell args) {
   assert(istype(car(args), TCONS));
-  ((struct cons*)(car(args) & ~TAG))->cdr = cadr(args);
+  ((struct cons*)cellasptr(car(args)))->cdr = cadr(args);
   return car(args);
 }
 cell pprint(cell args) {
@@ -471,16 +530,40 @@ void repl(void) {
     cell form = readstring(line);
     if (err) continue;
     println(eval(form, nil));
+    gc();
     printf("heap: %ld/%d\n", heaptop - heap, HEAPSIZE);
   }
 }
 
+void debuggc(void) {
+  cell c = cons(fix(1), cons(fix(2), fix(3)));
+  cell cc = c;
+  GCPROTECT(&c, &cc);
+
+  printf("before gc:");
+  printexpr(c);
+  printexpr(cc);
+  printf("\n");
+
+  gc();
+
+  printf("after gc:");
+  printexpr(c);
+  printexpr(cc);
+  printf("\n");
+  exit(0);
+}
+
 int main(int argc, char** argv) {
-  heap = heaptop = malloc(HEAPSIZE);
+  heapa = malloc(HEAPSIZE);
+  heapb = malloc(HEAPSIZE);
+  heap = heaptop = heapa;
+  toheap = toheaptop = heapb;
+  debuggc();
   nil = symc("nil");
   internlist = cons(nil, nil);
   globalenv = nil;
-  GCPROTECT(3, &nil, &internlist, &globalenv);
+  GCPROTECT(&nil, &internlist, &globalenv);
 
   defprimitive("+", pplus);
   defprimitive("-", pminus);

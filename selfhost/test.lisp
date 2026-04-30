@@ -18,3 +18,12 @@
       (cond
         ((eq x 0) 1)
         (1 (* x (fact (-1 x)))))))
+
+(def 'rec
+  (fn (x)
+      (print x)
+      (cond
+        ((eq x 0) 0)
+        (1 (rec (- x 1))))))
+
+(rec 8000)
