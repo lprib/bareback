@@ -84,26 +84,34 @@ int isforwarded(cell* inheap) {
   return (forwardmap[slot/32] & (1u << (slot%32))) != 0;
 }
 
-void setforwarded(cell* inheap, cell* to) {
+void setforwarded(cell* inheap, void* to) {
   *inheap = (cell)(to);
   int slot = ((void*)inheap - (void*)heap) / HEAPALIGN;
   forwardmap[slot/32] |= (1u << (slot%32));
 }
 
 void moveimm(cell* imm) {
+  // ASSUMPTION: all values with low bit set are pointers
+  if ((*imm & 1) != 1)
+    return;
+
   cell* pointer = (cell*)cellasptr(*imm);
-  if (istype(*imm, TCONS)) {
-    if (isforwarded(pointer)) {
-      cell fwdptrvalue = *pointer;
-      // edit the imm in-place to point where the fwd pointer points
-      *imm &= TAG;
-      *imm |= fwdptrvalue;
-      return;
-    }
-    printf("moveimm cons");
+  if (isforwarded(pointer)) {
+    cell fwdptrvalue = *pointer;
+    // edit the imm in-place to point where the fwd pointer points
+    *imm &= TAG;
+    *imm |= fwdptrvalue;
+    printf("moveimm already fwd ");
     printexpr(*imm);
     printf("\n");
-    struct cons* oldcons = (struct cons*)(cellasptr(*imm));
+    return;
+  }
+
+  printf("moveimm ");
+  printexpr(*imm);
+  printf("\n");
+  if (istype(*imm, TCONS)) {
+    struct cons* oldcons = (struct cons*)cellasptr(*imm);
     struct cons* newcons = alloc(2, &toheaptop);
     newcons->car = oldcons->car;
     newcons->cdr = oldcons->cdr;
@@ -112,6 +120,20 @@ void moveimm(cell* imm) {
     setforwarded(pointer, &newcons->car);
     *imm &= TAG;
     *imm |= (cell)(&newcons->car);
+  } else if (istype(*imm, TSTR) || istype(*imm, TSYM)) {
+    char* oldstr = (char*)cellasptr(*imm);
+    int buflen = strlen(oldstr)+1;
+    char* newstr = allocbytes(buflen, &toheaptop);
+    memcpy(newstr, oldstr, buflen);
+    setforwarded(pointer, (cell*)newstr);
+    *imm &= TAG;
+    *imm |= (cell)(newstr);
+  } else if (istype(*imm, TSTAG)) {
+    // 1. allocate new object in toheap
+    // 2. copy contents to new heap
+    // 3. push chidren to greystack
+    // 4. setforwarded
+    // 5. fix up *imm to point to new location
   }
 }
 
@@ -161,8 +183,9 @@ cell cdr(cell cons) {
 
 #define strc(s) str(s, strlen(s))
 cell str(char* s, int len) {
-  char* a = allocbytes(len, &heaptop);
+  char* a = allocbytes(len+1, &heaptop);
   memcpy(a, s, len);
+  a[len] = '\0';
   return (cell)(a) | TSTR;
 }
 
@@ -536,7 +559,7 @@ void repl(void) {
 }
 
 void debuggc(void) {
-  cell c = cons(fix(1), cons(fix(2), fix(3)));
+  cell c = cons(fix(1), cons(symc("hi"), fix(3)));
   cell cc = c;
   GCPROTECT(&c, &cc);
 
@@ -546,6 +569,8 @@ void debuggc(void) {
   printf("\n");
 
   gc();
+
+  memset(toheap, 0, HEAPSIZE);
 
   printf("after gc:");
   printexpr(c);
