@@ -310,15 +310,21 @@ cell evallist(cell list, cell env) {
   return res;
 }
 
+// CALLERS MUST GCPROTECT THEIR LOCALS
 cell evalcond(cell branches, cell env) {
   if (branches == nil) return nil;
+  GCPROTECT(&branches, &env);
+  cell result = nil;
   if (eval(car(car(branches)), env) != nil)
-    return eval(cadr(car(branches)), env);
-  return evalcond(cdr(branches), env);
+    result =  eval(cadr(car(branches)), env);
+  else
+    result = evalcond(cdr(branches), env);
+
+  ENDGCPROTECT();
+  return result;
 }
 
-cell apply(cell proc, cell args);
-
+// CALLERS MUST GCPROTECT THEIR LOCALS
 cell progn(cell bodylist, cell env) {
   if (cdr(bodylist) == nil) {
     // base case requires no gc protect due to tail call
@@ -331,7 +337,9 @@ cell progn(cell bodylist, cell env) {
   return progn(cdr(bodylist), env);
 }
 
+cell apply(cell proc, cell args);
 
+// CALLERS MUST GCPROTECT THEIR LOCALS
 cell eval(cell expr, cell env) {
   cell res = nil;
 
@@ -343,7 +351,8 @@ cell eval(cell expr, cell env) {
     res = envlookup(expr, env);
   } else if (istype(expr, TCONS)) {
     cell fn = nil;
-    GCPROTECT(&expr, &env, &fn);
+    cell args = nil;
+    GCPROTECT(&expr, &env, &fn, &args);
     gc();
 
     if (car(expr) == internc("quote")) {
@@ -356,7 +365,7 @@ cell eval(cell expr, cell env) {
       res = progn(cdr(expr), env);
     } else {
       fn = eval(car(expr), env);
-      cell args = evallist(cdr(expr), env);
+      args = evallist(cdr(expr), env);
       res = apply(fn, args);
     }
     ENDGCPROTECT();
@@ -365,6 +374,7 @@ cell eval(cell expr, cell env) {
   return res;
 }
 
+// CALLERS MUST GCPROTECT THEIR LOCALS
 cell apply(cell proc, cell args) {
   if ((proc & TAG) == TSTAG) {
     cell* heapval = (cell*)cellasptr(proc);
