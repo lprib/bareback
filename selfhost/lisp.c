@@ -90,8 +90,8 @@ int isforwarded(cell* inheap) {
   return (forwardmap[slot/32] & (1u << (slot%32))) != 0;
 }
 
-int inmainheap(cell* c) {
-  return ((void*)c - (void*)heap) < HEAPSIZE;
+int inmainheap(void* c) {
+  return (c >= (void*)heap) && (c < ((void*)heap + HEAPSIZE));
 }
 
 void setforwarded(cell* inheap, void* to) {
