@@ -3,6 +3,8 @@
 #include <assert.h>
 #include <string.h>
 
+#define DBG(_stmt) if(0) {_stmt;}
+
 #define HEAPALIGN 0x8 // 3byte tag = 8 byte align
 
 // TAG for fix is single low bit of zero
@@ -68,6 +70,9 @@ struct closure { cell stag, argnames, body, env; };
 
 #define cellasptr(_cell) ((_cell) & ~TAG)
 
+// ASSUMPTION: all values with low bit set are pointers
+#define isptrtype(_cell) (((_cell) & 1) == 1)
+
 void* alloc(int cells, cell** whichheaptop) {
   cell* p = *whichheaptop;
   *whichheaptop += cells;
@@ -84,6 +89,10 @@ int isforwarded(cell* inheap) {
   return (forwardmap[slot/32] & (1u << (slot%32))) != 0;
 }
 
+int inmainheap(cell* c) {
+  return ((void*)c - (void*)heap) < HEAPSIZE;
+}
+
 void setforwarded(cell* inheap, void* to) {
   *inheap = (cell)(to);
   int slot = ((void*)inheap - (void*)heap) / HEAPALIGN;
@@ -91,35 +100,35 @@ void setforwarded(cell* inheap, void* to) {
 }
 
 void moveimm(cell* imm) {
-  // ASSUMPTION: all values with low bit set are pointers
-  if ((*imm & 1) != 1)
+  if (!isptrtype(*imm))
     return;
 
   cell* pointer = (cell*)cellasptr(*imm);
   if (isforwarded(pointer)) {
+    DBG(printf("moveimm already fwd "));
+    DBG(printexpr(*imm));
+    DBG(printf("\n"));
+
     cell fwdptrvalue = *pointer;
     // edit the imm in-place to point where the fwd pointer points
     *imm &= TAG;
     *imm |= fwdptrvalue;
-    printf("moveimm already fwd ");
-    printexpr(*imm);
-    printf("\n");
     return;
   }
 
-  printf("moveimm ");
-  printexpr(*imm);
-  printf("\n");
+  DBG(printf("moveimm "));
+  DBG(printexpr(*imm));
+  DBG(printf("\n"));
   if (istype(*imm, TCONS)) {
     struct cons* oldcons = (struct cons*)cellasptr(*imm);
-    struct cons* newcons = alloc(2, &toheaptop);
+    struct cons* newcons = alloc(sizeof(struct cons)/sizeof(cell), &toheaptop);
     newcons->car = oldcons->car;
     newcons->cdr = oldcons->cdr;
     *greystacktop++ = &newcons->cdr;
     *greystacktop++ = &newcons->car;
-    setforwarded(pointer, &newcons->car);
+    setforwarded(pointer, newcons);
     *imm &= TAG;
-    *imm |= (cell)(&newcons->car);
+    *imm |= (cell)(newcons);
   } else if (istype(*imm, TSTR) || istype(*imm, TSYM)) {
     char* oldstr = (char*)cellasptr(*imm);
     int buflen = strlen(oldstr)+1;
@@ -129,11 +138,28 @@ void moveimm(cell* imm) {
     *imm &= TAG;
     *imm |= (cell)(newstr);
   } else if (istype(*imm, TSTAG)) {
-    // 1. allocate new object in toheap
-    // 2. copy contents to new heap
-    // 3. push chidren to greystack
-    // 4. setforwarded
-    // 5. fix up *imm to point to new location
+    if ((*pointer & STAG) == STCLOS) {
+      struct closure* oldclosure = (struct closure*)cellasptr(*imm);
+      struct closure* newclosure = alloc(sizeof(struct closure)/sizeof(cell), &toheaptop);
+      newclosure->stag = oldclosure->stag;
+      newclosure->argnames = oldclosure->argnames;
+      newclosure->body = oldclosure->body;
+      newclosure->env = oldclosure->env;
+      *greystacktop++ = &newclosure->argnames;
+      *greystacktop++ = &newclosure->body;
+      *greystacktop++ = &newclosure->env;
+      setforwarded(pointer, newclosure);
+      *imm &= TAG;
+      *imm |= (cell)(newclosure);
+    } else if ((*pointer & STAG) == STPRIM) {
+      struct primitive* oldprim = (struct primitive*) cellasptr(*imm);
+      struct primitive* newprim = alloc(sizeof(struct primitive)/sizeof(cell), &toheaptop);
+      newprim->stag = oldprim->stag;
+      newprim->fn = oldprim->fn;
+      setforwarded(pointer, newprim);
+      *imm &= TAG;
+      *imm |= (cell)(newprim);
+    }
   }
 }
 
@@ -149,18 +175,18 @@ void gcframe(struct gcframe* frame) {
 }
 
 void gc(void) {
-  //toheaptop = (heap == heapa) ? heapb : heapa;
-  printf("====================\nGC invoked\n");
+  DBG(printf("====================\nGC invoked\n"));
   gcframe(topgcframe);
   heap = (heap == heapa) ? heapb : heapa;
   toheap = (heap == heapa) ? heapb : heapa;
   heaptop = toheaptop; // start allocating where GC left off
   toheaptop = toheap; // discard everything in toheap
+  memset(forwardmap, 0, sizeof(forwardmap));
 }
 
 
 cell cons(cell car, cell cdr) {
-  struct cons* cns = alloc(sizeof(struct cons) / sizeof(cell), &heaptop);
+  struct cons* cns = alloc(sizeof(struct cons)/sizeof(cell), &heaptop);
   cns->car = car;
   cns->cdr = cdr;
   return ((cell)cns) | TCONS;
@@ -219,7 +245,7 @@ cell prim(primitivefn fn) {
 }
 
 cell closure(cell argnames, cell body, cell env) {
-  struct closure* closure = alloc(sizeof(struct closure) / sizeof(cell), &heaptop);
+  struct closure* closure = alloc(sizeof(struct closure)/sizeof(cell), &heaptop);
   closure->stag = STCLOS;
   closure->argnames = argnames;
   closure->body = body;
@@ -472,6 +498,14 @@ void printlist(cell c) {
 }
 
 void printexpr(cell c) {
+  // print GC forwarded values
+  if (isptrtype(c) && inmainheap((void*)cellasptr(c)) && isforwarded((void*)cellasptr(c))){
+    printf("fwd:");
+    cell fwdptrvalue = *((cell*)cellasptr(c));
+    c &= TAG;
+    c |= fwdptrvalue;
+  }
+
   if ((c & FIXTAG) == FIX) {
     printf("%ld", c >> 1);
   } else if ((c & TAG) == TCONS) {
@@ -487,7 +521,7 @@ void printexpr(cell c) {
     struct closure* closure;
     switch(heapval[0] & STAG) {
       case STPRIM:
-        printf("#<prim>");
+        printf("#<prim %lx>", cellasptr(heapval[1]));
         break;
       case STCLOS:
          closure = (struct closure*)heapval;
@@ -558,33 +592,11 @@ void repl(void) {
   }
 }
 
-void debuggc(void) {
-  cell c = cons(fix(1), cons(symc("hi"), fix(3)));
-  cell cc = c;
-  GCPROTECT(&c, &cc);
-
-  printf("before gc:");
-  printexpr(c);
-  printexpr(cc);
-  printf("\n");
-
-  gc();
-
-  memset(toheap, 0, HEAPSIZE);
-
-  printf("after gc:");
-  printexpr(c);
-  printexpr(cc);
-  printf("\n");
-  exit(0);
-}
-
 int main(int argc, char** argv) {
   heapa = malloc(HEAPSIZE);
   heapb = malloc(HEAPSIZE);
   heap = heaptop = heapa;
   toheap = toheaptop = heapb;
-  debuggc();
   nil = symc("nil");
   internlist = cons(nil, nil);
   globalenv = nil;
