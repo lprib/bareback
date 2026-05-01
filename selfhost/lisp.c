@@ -3,7 +3,8 @@
 #include <assert.h>
 #include <string.h>
 
-#define DBG(_stmt) if(0) {_stmt;}
+#define DBG_ENABLED 0
+#define DBG(_stmt) if(DBG_ENABLED) {_stmt;}
 
 #define HEAPALIGN 0x8 // 3byte tag = 8 byte align
 
