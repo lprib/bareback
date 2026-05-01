@@ -549,13 +549,17 @@ void println(cell c) {
 
 cell pplus(cell args) {
   if (args == nil) return 0;
-  else return fix((car(args)>>1) + (pplus(cdr(args))>>1));
+  assert((car(args) & FIXTAG) == FIX);
+  return fix((car(args)>>1) + (pplus(cdr(args))>>1));
 }
 cell ptimes(cell args) {
   if (args == nil) return 0;
-  else return fix((car(args)>>1) * (pplus(cdr(args))>>1));
+  assert((car(args) & FIXTAG) == FIX);
+  return fix((car(args)>>1) * (pplus(cdr(args))>>1));
 }
-cell pminus(cell args) { return fix((car(args)>>1) - (cadr(args)>>1)); }
+cell pminus(cell args) {
+  return fix((car(args)>>1) - (cadr(args)>>1));
+}
 cell pcons(cell args) { return cons(car(args), cadr(args)); }
 cell pcar(cell args) { return car(car(args)); }
 cell pcdr(cell args) { return cdr(car(args)); }
