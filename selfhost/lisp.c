@@ -390,12 +390,15 @@ cell apply(cell proc, cell args) {
 // READER/WRITER
 
 char* text; // remaining input
+#define OK 0
+#define ERRPARSE 1
+#define ERREOF 2
 int err;
 
-int eof(char const *msg) {
+int unexpectedeof(char const *msg) {
   if (!*text) {
     printf("ERR eof %s\n", msg);
-    err = 1;
+    err = ERRPARSE;
     return 1;
   }
   return 0;
@@ -411,18 +414,18 @@ void skipws(void) {
   }
 }
 
-cell readexpr(void);
+cell readform(void);
 cell readlist(void) {
   skipws();
-  if (eof("while parsing list")) return nil;
+  if (unexpectedeof("while parsing list")) return nil;
   if (*text == ')') { text++; return nil; }
   if (*text == '.') {
     text++;
-    cell cdr = readexpr();
+    cell cdr = readform();
     if (err) return nil;
     // consume end ')'
     skipws();
-    if (eof("after cons '.'")) return nil;
+    if (unexpectedeof("after cons '.'")) return nil;
     if (*text != ')') {
       printf("parse error with (a . b) cons\n");
       err = 1;
@@ -431,14 +434,14 @@ cell readlist(void) {
     text++;
     return cdr;
   }
-  cell car = readexpr();
+  cell car = readform();
   if (err) return nil;
   cell cdr = readlist();
   if (err) return nil;
   return cons(car, cdr);
 }
 
-cell readexpr(void) {
+cell readform(void) {
   skipws();
   if (*text == '(') {
     text++;
@@ -457,7 +460,7 @@ cell readexpr(void) {
 
   if (*text == '\'') {
     text++;
-    cell inner = readexpr();
+    cell inner = readform();
     if (err) return nil;
     return cons(internc("quote"), cons(inner, nil));
   }
@@ -466,7 +469,7 @@ cell readexpr(void) {
     char* start = ++text;
     while(*text && *text != '"') text++;
     cell strlit = str(start, text - start);
-    if (eof("in string literal")) return nil;
+    if (unexpectedeof("in string literal")) return nil;
     text++;
     return strlit;
   }
@@ -477,17 +480,13 @@ cell readexpr(void) {
   if (text != symstart)
     return intern(symstart, text - symstart);
 
-  if (eof("while parsing expr")) return nil;
+  if (!*text) {
+    err = ERREOF; // Not neccessarily fatal
+    return nil;
+  }
   printf("ERR: unexpected char '%c' (%d)", *text, (int)(*text));
   err = 1;
   return nil;
-}
-
-cell readstring(char* s) {
-  text = s;
-  err = 0;
-  cell expr = readexpr();
-  return err ? nil : expr;
 }
 
 void printlist(cell c) {
@@ -548,17 +547,18 @@ void println(cell c) {
   printf("\n");
 }
 
+
 // PRIMITIVES
 
 cell pplus(cell args) {
-  if (args == nil) return 0;
+  if (args == nil) return fix(0);
   assert((car(args) & FIXTAG) == FIX);
   return fix((car(args)>>1) + (pplus(cdr(args))>>1));
 }
 cell ptimes(cell args) {
-  if (args == nil) return 0;
+  if (args == nil) return fix(1);
   assert((car(args) & FIXTAG) == FIX);
-  return fix((car(args)>>1) * (pplus(cdr(args))>>1));
+  return fix((car(args)>>1) * (ptimes(cdr(args))>>1));
 }
 cell pminus(cell args) {
   return fix((car(args)>>1) - (cadr(args)>>1));
@@ -592,17 +592,26 @@ void defprimitive(char* name, primitivefn fn) {
   globalenv = cons(cons(internc(name), prim(fn)), globalenv);
 }
 
-void repl(void) {
+
+// IO
+
+void repl(int bellsandwhistles) {
   for (;;) {
-    printf("> ");
+    if (bellsandwhistles) printf("> ");
     fflush(stdout);
     char line[0x1000];
     if (!fgets(line, sizeof(line), stdin)) break;
-    cell form = readstring(line);
-    if (err) continue;
-    println(eval(form, nil));
-    gc();
-    printf("heap: %ld/%d\n", heaptop - heap, HEAPSIZE);
+    text = line;
+    err = OK;
+    while (err == OK) {
+      cell form = readform();
+      if (err != OK)
+        break;
+      cell res  = eval(form, nil);
+      println(res);
+      gc();
+      if (bellsandwhistles) printf("heap: %ld/%d\n", heaptop - heap, HEAPSIZE);
+    }
   }
 }
 
@@ -637,9 +646,13 @@ int main(int argc, char** argv) {
 
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "repl")) {
-      repl();
+      repl(1);
+      return 0;
+    } else if (!strcmp(argv[i], "stdin")) {
+      repl(0);
       return 0;
     }
+
 
     FILE* f = fopen(argv[i], "r");
     if (!f) { printf("cannot open %s\n", argv[i]); return 1; }
@@ -655,7 +668,7 @@ int main(int argc, char** argv) {
     while(*text) {
       skipws();
       if (!*text) break;
-      cell form = readexpr();
+      cell form = readform();
       if (err) { printf("ERR parsing %s\n", argv[i]); return 1; }
       eval(form, nil);
     }
