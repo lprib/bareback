@@ -5,9 +5,9 @@
       (1 (seq (- n 1) (cons (- n 1) acc))))))
 
 (def 'map
-  (fn (list fn)
+  (fn (list f)
     (cond
-      (list (cons (fn (car list)) (map (cdr list) fn)))
+      (list (cons (f (car list)) (map (cdr list) f)))
       (1 nil))))
 
 (def '+1 (fn (x) (+ x 1)))

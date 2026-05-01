@@ -25,6 +25,7 @@
 typedef long cell;
 typedef cell (*primitivefn) (cell args);
 
+// Used to protect stack variables during GC (so GC can move them)
 struct gcframe {
   struct gcframe* parent;
   int cnt;
@@ -33,32 +34,39 @@ struct gcframe {
 
 #define HEAPSIZE 0x100000
 
-cell* heapa;
+cell* heapa; // Underlying allocation
 cell* heapb;
 
-cell* heap;
+cell* heap; // Current heap (will A/B swap during GC)
 cell* heaptop;
 
-cell* toheap;
+cell* toheap; // Heap to collect into during GC, will A/B swap during GC
 cell* toheaptop;
 
-cell internlist;
-cell nil;
-cell globalenv;
+cell internlist; // list of symbol
+cell nil; // nil symbol
+cell globalenv; // global environment alist
 
 struct gcframe* topgcframe = NULL;
 
+// Pass in refs to local variables so that the GC knowns about them and can move
+// them. GCPROTECT(&myvar); ...; gc(); means myvar will be edited by gc process
+// to move to new heap
 #define GCPROTECT(...) \
   cell* _roots[] = { __VA_ARGS__ }; \
   struct gcframe _frame = { topgcframe, sizeof(_roots)/sizeof(_roots[0]), _roots }; \
   topgcframe = &_frame;
 
+// Don't bother protecting vars in this stack frame anymore
 #define ENDGCPROTECT() topgcframe = _frame.parent;
 
+// Bitmap of whether this value has been forwarded to new heap during GC. One
+// bit per aligned heap slot.
 unsigned int forwardmap[HEAPSIZE / HEAPALIGN / 32] = {0};
 
-cell* greystack[1000];
-cell** greystacktop = greystack;
+// stack of values who's children need to be reachability searched
+cell* gcworkstack[0x1000];
+cell** gcworkstacktop = gcworkstack;
 
 void println(cell c);
 void printexpr(cell c);
@@ -90,11 +98,11 @@ int isforwarded(cell* inheap) {
   return (forwardmap[slot/32] & (1u << (slot%32))) != 0;
 }
 
-int inmainheap(void* c) {
+int isinmainheap(void* c) {
   return (c >= (void*)heap) && (c < ((void*)heap + HEAPSIZE));
 }
 
-void setforwarded(cell* inheap, void* to) {
+void markforwarded(cell* inheap, void* to) {
   *inheap = (cell)(to);
   int slot = ((void*)inheap - (void*)heap) / HEAPALIGN;
   forwardmap[slot/32] |= (1u << (slot%32));
@@ -125,9 +133,9 @@ void moveimm(cell* imm) {
     struct cons* newcons = alloc(sizeof(struct cons)/sizeof(cell), &toheaptop);
     newcons->car = oldcons->car;
     newcons->cdr = oldcons->cdr;
-    *greystacktop++ = &newcons->cdr;
-    *greystacktop++ = &newcons->car;
-    setforwarded(pointer, newcons);
+    *gcworkstacktop++ = &newcons->cdr;
+    *gcworkstacktop++ = &newcons->car;
+    markforwarded(pointer, newcons);
     *imm &= TAG;
     *imm |= (cell)(newcons);
   } else if (istype(*imm, TSTR) || istype(*imm, TSYM)) {
@@ -135,7 +143,7 @@ void moveimm(cell* imm) {
     int buflen = strlen(oldstr)+1;
     char* newstr = allocbytes(buflen, &toheaptop);
     memcpy(newstr, oldstr, buflen);
-    setforwarded(pointer, (cell*)newstr);
+    markforwarded(pointer, (cell*)newstr);
     *imm &= TAG;
     *imm |= (cell)(newstr);
   } else if (istype(*imm, TSTAG)) {
@@ -146,10 +154,10 @@ void moveimm(cell* imm) {
       newclosure->argnames = oldclosure->argnames;
       newclosure->body = oldclosure->body;
       newclosure->env = oldclosure->env;
-      *greystacktop++ = &newclosure->argnames;
-      *greystacktop++ = &newclosure->body;
-      *greystacktop++ = &newclosure->env;
-      setforwarded(pointer, newclosure);
+      *gcworkstacktop++ = &newclosure->argnames;
+      *gcworkstacktop++ = &newclosure->body;
+      *gcworkstacktop++ = &newclosure->env;
+      markforwarded(pointer, newclosure);
       *imm &= TAG;
       *imm |= (cell)(newclosure);
     } else if ((*pointer & STAG) == STPRIM) {
@@ -157,7 +165,7 @@ void moveimm(cell* imm) {
       struct primitive* newprim = alloc(sizeof(struct primitive)/sizeof(cell), &toheaptop);
       newprim->stag = oldprim->stag;
       newprim->fn = oldprim->fn;
-      setforwarded(pointer, newprim);
+      markforwarded(pointer, newprim);
       *imm &= TAG;
       *imm |= (cell)(newprim);
     }
@@ -168,9 +176,9 @@ void gcframe(struct gcframe* frame) {
   if (!frame) return;
   for (int i = 0; i < frame->cnt; i++) {
     cell* root = frame->roots[i];
-    *greystacktop++ = root;
-    while (greystacktop > greystack)
-      moveimm(*(--greystacktop));
+    *gcworkstacktop++ = root;
+    while (gcworkstacktop > gcworkstack)
+      moveimm(*(--gcworkstacktop));
   }
   gcframe(frame->parent);
 }
@@ -295,6 +303,7 @@ cell pairlis(cell ks, cell vs) {
 cell eval(cell expr, cell env);
 
 
+// CALLERS MUST GCPROTECT THEIR LOCALS
 cell evallist(cell list, cell env) {
   cell head = nil;
   cell res = nil;
@@ -512,7 +521,7 @@ void printlist(cell c) {
 
 void printexpr(cell c) {
   // print GC forwarded values
-  if (isptrtype(c) && inmainheap((void*)cellasptr(c)) && isforwarded((void*)cellasptr(c))){
+  if (isptrtype(c) && isinmainheap((void*)cellasptr(c)) && isforwarded((void*)cellasptr(c))){
     printf("fwd:");
     cell fwdptrvalue = *((cell*)cellasptr(c));
     c &= TAG;
