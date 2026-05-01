@@ -267,6 +267,8 @@ cell envlookup(cell sym, cell env) {
   if (sym == nil) return nil;
   if (sym == internc("$"))
     return globalenv;
+  if (sym == internc("%"))
+    return internlist;
 
   if (env == nil) {
     // Ideally we would treat global as just another env. But that breaks
@@ -528,6 +530,10 @@ void printexpr(cell c) {
          closure = (struct closure*)heapval;
          printf("#<clos ");
          printexpr(closure->argnames);
+         printf(" ");
+         printexpr(closure->body);
+         printf(" ");
+         printexpr(closure->env);
          printf(">");
         break;
     }
