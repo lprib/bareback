@@ -68,7 +68,7 @@ struct primitive { cell stag; primitivefn fn; };
 struct closure { cell stag, argnames, body, env; };
 
 #define istype(_cell, _type) (((_cell) & TAG) == (_type))
-
+#define isfix(_cell) (((_cell) & FIXTAG) == FIX)
 #define cellasptr(_cell) ((_cell) & ~TAG)
 
 // ASSUMPTION: all values with low bit set are pointers
@@ -333,13 +333,13 @@ cell progn(cell bodylist, cell env) {
 cell eval(cell expr, cell env) {
   cell res = nil;
 
-  if ((expr & FIXTAG) == FIX) {
+  if (isfix(expr)) {
     res = expr;
-  } else if ((expr & TAG) == TSTR) {
+  } else if (istype(expr, TSTR)) {
     res = expr;
-  } else if ((expr & TAG) == TSYM) {
+  } else if (istype(expr, TSYM)) {
     res = envlookup(expr, env);
-  } else if ((expr & TAG) == TCONS) {
+  } else if (istype(expr, TCONS)) {
     cell fn = nil;
     GCPROTECT(&expr, &env, &fn);
     gc();
