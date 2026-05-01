@@ -24,31 +24,32 @@
 
 typedef long cell;
 typedef cell (*primitivefn) (cell args);
+struct cons { cell car, cdr; };
+struct primitive { cell stag; primitivefn fn; };
+struct closure { cell stag, argnames, body, env; };
+#define istype(_cell, _type) (((_cell) & TAG) == (_type))
+#define isfix(_cell) (((_cell) & FIXTAG) == FIX)
+#define cellasptr(_cell) ((_cell) & ~TAG)
+// ASSUMPTION: all values with low bit set are pointers
+#define isptrtype(_cell) (((_cell) & 1) == 1)
+cell internlist; // lisp list of symbols that are intened
+cell nil; // nil symbol
+cell globalenv; // global environment lisp alist
 
+#define HEAPSIZE 0x100000
+cell* heapa; // Underlying allocation A
+cell* heapb; // Underlying allocation B
+cell* heap; // Current heap (will A/B swap during GC)
+cell* heaptop;
+cell* toheap; // Heap to collect into during GC, will A/B swap during GC
+cell* toheaptop;
 // Used to protect stack variables during GC (so GC can move them)
 struct gcframe {
   struct gcframe* parent;
   int cnt;
   cell** roots;
 };
-
-#define HEAPSIZE 0x100000
-
-cell* heapa; // Underlying allocation
-cell* heapb;
-
-cell* heap; // Current heap (will A/B swap during GC)
-cell* heaptop;
-
-cell* toheap; // Heap to collect into during GC, will A/B swap during GC
-cell* toheaptop;
-
-cell internlist; // list of symbol
-cell nil; // nil symbol
-cell globalenv; // global environment alist
-
 struct gcframe* topgcframe = NULL;
-
 // Pass in refs to local variables so that the GC knowns about them and can move
 // them. GCPROTECT(&myvar); ...; gc(); means myvar will be edited by gc process
 // to move to new heap
@@ -56,14 +57,11 @@ struct gcframe* topgcframe = NULL;
   cell* _roots[] = { __VA_ARGS__ }; \
   struct gcframe _frame = { topgcframe, sizeof(_roots)/sizeof(_roots[0]), _roots }; \
   topgcframe = &_frame;
-
 // Don't bother protecting vars in this stack frame anymore
 #define ENDGCPROTECT() topgcframe = _frame.parent;
-
 // Bitmap of whether this value has been forwarded to new heap during GC. One
 // bit per aligned heap slot.
 unsigned int forwardmap[HEAPSIZE / HEAPALIGN / 32] = {0};
-
 // stack of values who's children need to be reachability searched
 cell* gcworkstack[0x1000];
 cell** gcworkstacktop = gcworkstack;
@@ -71,16 +69,8 @@ cell** gcworkstacktop = gcworkstack;
 void println(cell c);
 void printexpr(cell c);
 
-struct cons { cell car, cdr; };
-struct primitive { cell stag; primitivefn fn; };
-struct closure { cell stag, argnames, body, env; };
-
-#define istype(_cell, _type) (((_cell) & TAG) == (_type))
-#define isfix(_cell) (((_cell) & FIXTAG) == FIX)
-#define cellasptr(_cell) ((_cell) & ~TAG)
-
-// ASSUMPTION: all values with low bit set are pointers
-#define isptrtype(_cell) (((_cell) & 1) == 1)
+
+// ALLOC & GC
 
 void* alloc(int cells, cell** whichheaptop) {
   cell* p = *whichheaptop;
@@ -114,14 +104,12 @@ void moveimm(cell* imm) {
 
   cell* pointer = (cell*)cellasptr(*imm);
   if (isforwarded(pointer)) {
+    // (*imm) is a pointer immediate that points to old heap location. That old
+    // heap location contains a pointer to it's new residence in the toheap
     DBG(printf("moveimm already fwd "));
     DBG(printexpr(*imm));
     DBG(printf("\n"));
-
-    cell fwdptrvalue = *pointer;
-    // edit the imm in-place to point where the fwd pointer points
-    *imm &= TAG;
-    *imm |= fwdptrvalue;
+    *imm = (*imm & TAG) | *pointer; // replace imm with forward pointer
     return;
   }
 
@@ -136,16 +124,14 @@ void moveimm(cell* imm) {
     *gcworkstacktop++ = &newcons->cdr;
     *gcworkstacktop++ = &newcons->car;
     markforwarded(pointer, newcons);
-    *imm &= TAG;
-    *imm |= (cell)(newcons);
+    *imm = (*imm & TAG) | (cell)(newcons);
   } else if (istype(*imm, TSTR) || istype(*imm, TSYM)) {
     char* oldstr = (char*)cellasptr(*imm);
     int buflen = strlen(oldstr)+1;
     char* newstr = allocbytes(buflen, &toheaptop);
     memcpy(newstr, oldstr, buflen);
     markforwarded(pointer, (cell*)newstr);
-    *imm &= TAG;
-    *imm |= (cell)(newstr);
+    *imm = (*imm & TAG) | (cell)newstr;
   } else if (istype(*imm, TSTAG)) {
     if ((*pointer & STAG) == STCLOS) {
       struct closure* oldclosure = (struct closure*)cellasptr(*imm);
@@ -158,16 +144,14 @@ void moveimm(cell* imm) {
       *gcworkstacktop++ = &newclosure->body;
       *gcworkstacktop++ = &newclosure->env;
       markforwarded(pointer, newclosure);
-      *imm &= TAG;
-      *imm |= (cell)(newclosure);
+      *imm = (*imm & TAG) | (cell)newclosure;
     } else if ((*pointer & STAG) == STPRIM) {
       struct primitive* oldprim = (struct primitive*) cellasptr(*imm);
       struct primitive* newprim = alloc(sizeof(struct primitive)/sizeof(cell), &toheaptop);
       newprim->stag = oldprim->stag;
       newprim->fn = oldprim->fn;
       markforwarded(pointer, newprim);
-      *imm &= TAG;
-      *imm |= (cell)(newprim);
+      *imm = (*imm & TAG) | (cell)newprim;
     }
   }
 }
@@ -193,6 +177,8 @@ void gc(void) {
   memset(forwardmap, 0, sizeof(forwardmap));
 }
 
+
+// METACIRCULAR EVALUATOR BOOTSTRAP
 
 cell cons(cell car, cell cdr) {
   struct cons* cns = alloc(sizeof(struct cons)/sizeof(cell), &heaptop);
@@ -262,7 +248,6 @@ cell closure(cell argnames, cell body, cell env) {
   return (cell)closure | TSTAG;
 }
 
-
 cell assoc(cell key, cell alist) {
   if (alist == nil)
     return nil;
@@ -301,7 +286,6 @@ cell pairlis(cell ks, cell vs) {
 }
 
 cell eval(cell expr, cell env);
-
 
 // CALLERS MUST GCPROTECT THEIR LOCALS
 cell evallist(cell list, cell env) {
@@ -402,9 +386,10 @@ cell apply(cell proc, cell args) {
   return nil;
 }
 
+
 // READER/WRITER
 
-char* text;
+char* text; // remaining input
 int err;
 
 int eof(char const *msg) {
@@ -524,8 +509,7 @@ void printexpr(cell c) {
   if (isptrtype(c) && isinmainheap((void*)cellasptr(c)) && isforwarded((void*)cellasptr(c))){
     printf("fwd:");
     cell fwdptrvalue = *((cell*)cellasptr(c));
-    c &= TAG;
-    c |= fwdptrvalue;
+    c = (c & TAG) | fwdptrvalue; // replace pointer part
   }
 
   if ((c & FIXTAG) == FIX) {
