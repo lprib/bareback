@@ -18,6 +18,9 @@
 #define TSTR    0x5 // string
 #define TSTAG   0x7 // self tagged heap pointer
 
+// STAG (self-tagged): any TSTAG value must point to a heap allocation with a
+// one-cell header: [ lengthbytes << 8 | STAG ]. When GCing, always round up
+// lengthbtyes to sizeof(cell)
 #define STAG    0xff // (mask)
 #define STCLOS  0x00 // lisp closure
 #define STPRIM  0x01 // primitive function
@@ -128,33 +131,16 @@ void moveimm(cell* imm) {
     markforwarded(pointer, newcons);
     *imm = (*imm & TAG) | (cell)(newcons);
   } else if (istype(*imm, TSTAG) || istype(*imm, TSTR) || istype(*imm, TSYM)) {
-    if ((*pointer & STAG) == STCLOS) {
-      struct closure* oldclosure = (struct closure*)cellasptr(*imm);
-      struct closure* newclosure = alloc(sizeof(struct closure)/sizeof(cell), &toheaptop);
-      newclosure->stag = oldclosure->stag;
-      newclosure->argnames = oldclosure->argnames;
-      newclosure->body = oldclosure->body;
-      newclosure->env = oldclosure->env;
-      *gcworkstacktop++ = &newclosure->argnames;
-      *gcworkstacktop++ = &newclosure->body;
-      *gcworkstacktop++ = &newclosure->env;
-      markforwarded(pointer, newclosure);
-      *imm = (*imm & TAG) | (cell)newclosure;
-    } else if ((*pointer & STAG) == STPRIM) {
-      struct primitive* oldprim = (struct primitive*) cellasptr(*imm);
-      struct primitive* newprim = alloc(sizeof(struct primitive)/sizeof(cell), &toheaptop);
-      newprim->stag = oldprim->stag;
-      newprim->fn = oldprim->fn;
-      markforwarded(pointer, newprim);
-      *imm = (*imm & TAG) | (cell)newprim;
-    } else if ((*pointer & STAG) == STBUF) {
-      struct buffer* oldbuf = (struct buffer*)cellasptr(*imm);
-      int lencells = ((oldbuf->stag >> 8) + sizeof(cell) - 1) / sizeof(cell);
-      struct buffer* newbuf = alloc(sizeof(struct buffer)/sizeof(cell) + lencells, &toheaptop);
-      newbuf->stag = oldbuf->stag;
-      memcpy(newbuf->data, oldbuf->data, (oldbuf->stag >> 8));
-      markforwarded(pointer, newbuf);
-      *imm = (*imm & TAG) | (cell)newbuf;
+    cell stag = *(cell*)cellasptr(*imm);
+    int lencells = ((stag >> 8) + sizeof(cell) - 1) / sizeof(cell);
+    cell* new = alloc(lencells + 1, &toheaptop);
+    memcpy(new, pointer, (lencells + 1)*sizeof(cell));
+    markforwarded(pointer, new);
+    *imm = (*imm & TAG) | (cell)new;
+    if ((stag & STAG) == STCLOS) {
+      *gcworkstacktop++ = &((struct closure*)new)->argnames;
+      *gcworkstacktop++ = &((struct closure*)new)->body;
+      *gcworkstacktop++ = &((struct closure*)new)->env;
     }
   }
 }
@@ -209,7 +195,7 @@ cell buffer(int lenbytes) {
   int capcells = (lenbytes + sizeof(cell) - 1) / sizeof(cell);
   struct buffer* buf = alloc(sizeof(struct buffer)/sizeof(cell) + capcells, &heaptop);
   assert(lenbytes < (1<<24));
-  buf->stag = (lenbytes << 8) | STBUF;
+  buf->stag = lenbytes << 8 | STBUF;
   return (cell)buf | TSTAG;
 }
 
@@ -246,14 +232,14 @@ cell intern(char* s, int len) {
 
 cell prim(primitivefn fn) {
   struct primitive* primitive = alloc(sizeof(struct primitive) / sizeof(cell), &heaptop);
-  primitive->stag = STPRIM;
+  primitive->stag = (sizeof(struct primitive) - sizeof(cell)) << 8 | STPRIM;
   primitive->fn = fn;
   return (cell)primitive | TSTAG;
 }
 
 cell closure(cell argnames, cell body, cell env) {
   struct closure* closure = alloc(sizeof(struct closure)/sizeof(cell), &heaptop);
-  closure->stag = STCLOS;
+  closure->stag = (sizeof(struct closure) - sizeof(cell)) << 8 | STCLOS;
   closure->argnames = argnames;
   closure->body = body;
   closure->env = env;
