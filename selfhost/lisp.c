@@ -21,12 +21,14 @@
 #define STAG    0xff // (mask)
 #define STCLOS  0x00 // lisp closure
 #define STPRIM  0x01 // primitive function
+#define STBUF   0x02 // generic buffer
 
 typedef long cell;
 typedef cell (*primitivefn) (cell args);
 struct cons { cell car, cdr; };
 struct primitive { cell stag; primitivefn fn; };
 struct closure { cell stag, argnames, body, env; };
+struct buffer { cell stag; char data[]; };
 #define istype(_cell, _type) (((_cell) & TAG) == (_type))
 #define isfix(_cell) (((_cell) & FIXTAG) == FIX)
 #define cellasptr(_cell) ((_cell) & ~TAG)
@@ -125,14 +127,7 @@ void moveimm(cell* imm) {
     *gcworkstacktop++ = &newcons->car;
     markforwarded(pointer, newcons);
     *imm = (*imm & TAG) | (cell)(newcons);
-  } else if (istype(*imm, TSTR) || istype(*imm, TSYM)) {
-    char* oldstr = (char*)cellasptr(*imm);
-    int buflen = strlen(oldstr)+1;
-    char* newstr = allocbytes(buflen, &toheaptop);
-    memcpy(newstr, oldstr, buflen);
-    markforwarded(pointer, (cell*)newstr);
-    *imm = (*imm & TAG) | (cell)newstr;
-  } else if (istype(*imm, TSTAG)) {
+  } else if (istype(*imm, TSTAG) || istype(*imm, TSTR) || istype(*imm, TSYM)) {
     if ((*pointer & STAG) == STCLOS) {
       struct closure* oldclosure = (struct closure*)cellasptr(*imm);
       struct closure* newclosure = alloc(sizeof(struct closure)/sizeof(cell), &toheaptop);
@@ -152,6 +147,14 @@ void moveimm(cell* imm) {
       newprim->fn = oldprim->fn;
       markforwarded(pointer, newprim);
       *imm = (*imm & TAG) | (cell)newprim;
+    } else if ((*pointer & STAG) == STBUF) {
+      struct buffer* oldbuf = (struct buffer*)cellasptr(*imm);
+      int lencells = ((oldbuf->stag >> 8) + sizeof(cell) - 1) / sizeof(cell);
+      struct buffer* newbuf = alloc(sizeof(struct buffer)/sizeof(cell) + lencells, &toheaptop);
+      newbuf->stag = oldbuf->stag;
+      memcpy(newbuf->data, oldbuf->data, (oldbuf->stag >> 8));
+      markforwarded(pointer, newbuf);
+      *imm = (*imm & TAG) | (cell)newbuf;
     }
   }
 }
@@ -202,20 +205,29 @@ cell cdr(cell cons) {
 #define cadr(_cons) car(cdr(_cons))
 #define fix(n) ((cell)((n) << 1))
 
+cell buffer(int lenbytes) {
+  int capcells = (lenbytes + sizeof(cell) - 1) / sizeof(cell);
+  struct buffer* buf = alloc(sizeof(struct buffer)/sizeof(cell) + capcells, &heaptop);
+  assert(lenbytes < (1<<24));
+  buf->stag = (lenbytes << 8) | STBUF;
+  return (cell)buf | TSTAG;
+}
+
 #define strc(s) str(s, strlen(s))
-cell str(char* s, int len) {
-  char* a = allocbytes(len+1, &heaptop);
-  memcpy(a, s, len);
-  a[len] = '\0';
-  return (cell)(a) | TSTR;
+cell str(char* s, int strlen) {
+  cell bufcell = buffer(strlen+1);
+  struct buffer* buf = (struct buffer*)cellasptr(bufcell);
+  memcpy(buf->data, s, strlen);
+  buf->data[strlen] = '\0';
+  return cellasptr(bufcell) | TSTR;
 }
 
 #define symc(s) sym(s, strlen(s))
-cell sym(char* s, int len) { return cellasptr(str(s, len)) | TSYM; }
+cell sym(char* s, int strlen) { return cellasptr(str(s, strlen)) | TSYM; }
 
 char *getstr(cell strcell) {
   assert(istype(strcell, TSTR) || istype(strcell, TSYM));
-  return (char*)cellasptr(strcell);
+  return ((struct buffer*)cellasptr(strcell))->data;
 }
 
 #define internc(s) intern(s, strlen(s))
