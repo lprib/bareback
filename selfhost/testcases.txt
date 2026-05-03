@@ -229,3 +229,9 @@ case setbuf
 = 66
 > buffer
 = "bB$"
+
+case buflen
+> (def 'buffer "abc")
+= nil
+> (buflen buffer)
+= 4

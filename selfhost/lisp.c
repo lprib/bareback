@@ -185,7 +185,8 @@ cell cdr(cell cons) {
 }
 
 #define cadr(_cons) car(cdr(_cons))
-#define fix(n) ((cell)((n) << 1))
+#define fix(_n) ((cell)((_n) << 1))
+#define getfix(_n) ((_n) >> 1)
 
 cell buffer(int lenbytes) {
   int capcells = (lenbytes + sizeof(cell) - 1) / sizeof(cell);
@@ -518,14 +519,22 @@ void printexpr(cell c) {
   } else if ((c & TAG) == TSYM) {
     printf("%s", getstr(c).data);
   } else if ((c & TAG) == TSTAG) {
-    cell* heapval = (cell*)cellasptr(c);
+    cell* ptr = (cell*)cellasptr(c);
     struct closure* closure;
-    switch(heapval[0] & STAG) {
+    struct buffer* buf;
+    switch(ptr[0] & STAG) {
+      case STBUF:
+        buf = (struct buffer*)ptr;
+        printf("#<buf");
+        for(char* c = buf->data; c < (buf->data + (buf->stag >> 8)); c++)
+          printf(" %02x", (int)*c);
+        printf(">");
+        break;
       case STPRIM:
-        printf("#<prim %lx>", cellasptr(heapval[1]));
+        printf("#<prim %lx>", cellasptr(ptr[1]));
         break;
       case STCLOS:
-         closure = (struct closure*)heapval;
+         closure = (struct closure*)ptr;
          printf("#<clos ");
          printexpr(closure->argnames);
          printf(" ");
@@ -599,6 +608,36 @@ cell psetbuf(cell args) {
   getstr(car(args)).data[index] = val;
   return fix(val);
 }
+cell pbuflen(cell args) {
+  assert(isbuftype(car(args)));
+  return (((struct buffer*)cellasptr(car(args)))->stag >> 8) << 1;
+}
+cell preadfile(cell args) {
+  char* filename = getstr(car(args)).data;
+  FILE* f = fopen(filename, "r");
+  if (!f) { printf("cannot open %s\n", filename); return nil; }
+  long filesize;
+  fseek(f, 0, SEEK_END); filesize = ftell(f); rewind(f);
+  cell bufcell = buffer(filesize+1);
+  struct buffer* buf = (struct buffer*)cellasptr(bufcell);
+  fread(buf->data, 1, filesize, f);
+  fclose(f);
+  buf->data[filesize] = '\0';
+  return bufcell;
+}
+cell pwritefile(cell args) {
+  char* filename = getstr(car(args)).data;
+  struct buffer* buf = (struct buffer*)cellasptr(cadr(args));
+  FILE* f = fopen(filename, "w");
+  if (!f) { printf("cannot open %s\n", filename); return nil; }
+  int written = fwrite(buf->data, 1, buf->stag >> 8, f);
+  fclose(f);
+  if (written != buf->stag >> 8) {
+    printf("failed to write to %s\n", filename);
+    return nil;
+  }
+  return fix(1);
+}
 
 void defprimitive(char* name, primitivefn fn) {
   globalenv = cons(cons(internc(name), prim(fn)), globalenv);
@@ -650,6 +689,9 @@ int main(int argc, char** argv) {
   defprimitive("pairlis", ppairlis);
   defprimitive("getbuf", pgetbuf);
   defprimitive("setbuf", psetbuf);
+  defprimitive("buflen", pbuflen);
+  defprimitive("readfile", preadfile);
+  defprimitive("writefile", pwritefile);
 
   if (argc <= 1) {
     printf("Nothing to do. `%s repl` for repl\n", argv[0]);
@@ -663,7 +705,6 @@ int main(int argc, char** argv) {
       repl(0);
       return 0;
     }
-
 
     FILE* f = fopen(argv[i], "r");
     if (!f) { printf("cannot open %s\n", argv[i]); return 1; }

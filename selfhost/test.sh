@@ -11,7 +11,7 @@ run_test() {
         echo -n "."
         PASS=$((PASS+1))
     else
-        echo "$case FAIL"
+        echo "case $case FAIL"
         echo "  input:    $input"
         echo "  expected: $expected"
         echo "  actual:   $actual"
