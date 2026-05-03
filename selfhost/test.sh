@@ -8,7 +8,7 @@ run_test() {
     TOTAL=$((TOTAL+1))
     actual=$(printf '%s' "$input" | ./lisp stdin)
     if [ "$actual" = "$expected" ]; then
-        echo "$case OK"
+        echo -n "."
         PASS=$((PASS+1))
     else
         echo "$case FAIL"
@@ -45,5 +45,6 @@ done < "${1:-$TESTFILE}"
 
 [ -n "$input" ] && run_test
 
+echo
 echo "$PASS/$TOTAL passed"
 [ $PASS -eq $TOTAL ]

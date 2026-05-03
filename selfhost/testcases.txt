@@ -204,3 +204,28 @@ case factorial
 = 120
 > (factorial 15)
 = 1307674368000
+
+case getbuf
+> (def 'buffer "aA$")
+= nil
+> (getbuf buffer 0)
+= 97
+> (getbuf buffer 1)
+= 65
+> (getbuf buffer 2)
+= 36
+# strings are null terminated
+> (getbuf buffer 3)
+= 0
+
+case setbuf
+> (def 'buffer "aA$")
+= nil
+> (setbuf buffer 0 98)
+= 98
+> buffer
+= "bA$"
+> (setbuf buffer 1 66)
+= 66
+> buffer
+= "bB$"

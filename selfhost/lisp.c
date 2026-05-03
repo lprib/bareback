@@ -14,8 +14,8 @@
 
 #define TAG     0x7 // (mask)
 #define TCONS   0x1 // cons
-#define TSYM    0x3 // symbol
-#define TSTR    0x5 // string
+#define TSYM    0x3 // symbol, actually stag
+#define TSTR    0x5 // string, actually stag
 #define TSTAG   0x7 // self tagged heap pointer
 
 // STAG (self-tagged): any TSTAG value must point to a heap allocation with a
@@ -33,6 +33,7 @@ struct primitive { cell stag; primitivefn fn; };
 struct closure { cell stag, argnames, body, env; };
 struct buffer { cell stag; char data[]; };
 #define istype(_cell, _type) (((_cell) & TAG) == (_type))
+#define isbuftype(_cell) (istype((_cell), TSYM) || istype((_cell), TSTR) || istype((_cell), TSTAG))
 #define isfix(_cell) (((_cell) & FIXTAG) == FIX)
 #define cellasptr(_cell) ((_cell) & ~TAG)
 // ASSUMPTION: all values with low bit set are pointers
@@ -79,8 +80,7 @@ void printexpr(cell c);
 
 void* alloc(int cells, cell** whichheaptop) {
   cell* p = *whichheaptop;
-  *whichheaptop += cells;
-  *whichheaptop = (cell*)(((cell)(*whichheaptop) + HEAPALIGN - 1) & ~(HEAPALIGN - 1));
+  *whichheaptop = (cell*)(((cell)(*whichheaptop + cells) + HEAPALIGN - 1) & ~(HEAPALIGN - 1));
   return p;
 }
 
@@ -109,18 +109,14 @@ void moveimm(cell* imm) {
 
   cell* pointer = (cell*)cellasptr(*imm);
   if (isforwarded(pointer)) {
+    DBG(printf("moveimm already fwd ")); DBG(printexpr(*imm)); DBG(printf("\n"));
     // (*imm) is a pointer immediate that points to old heap location. That old
     // heap location contains a pointer to it's new residence in the toheap
-    DBG(printf("moveimm already fwd "));
-    DBG(printexpr(*imm));
-    DBG(printf("\n"));
     *imm = (*imm & TAG) | *pointer; // replace imm with forward pointer
     return;
   }
 
-  DBG(printf("moveimm "));
-  DBG(printexpr(*imm));
-  DBG(printf("\n"));
+  DBG(printf("moveimm ")); DBG(printexpr(*imm)); DBG(printf("\n"));
   if (istype(*imm, TCONS)) {
     struct cons* oldcons = (struct cons*)cellasptr(*imm);
     struct cons* newcons = alloc(sizeof(struct cons)/sizeof(cell), &toheaptop);
@@ -130,7 +126,7 @@ void moveimm(cell* imm) {
     *gcworkstacktop++ = &newcons->car;
     markforwarded(pointer, newcons);
     *imm = (*imm & TAG) | (cell)(newcons);
-  } else if (istype(*imm, TSTAG) || istype(*imm, TSTR) || istype(*imm, TSYM)) {
+  } else if (isbuftype(*imm)) {
     cell stag = *(cell*)cellasptr(*imm);
     int lencells = ((stag >> 8) + sizeof(cell) - 1) / sizeof(cell);
     cell* new = alloc(lencells + 1, &toheaptop);
@@ -157,7 +153,7 @@ void gcframe(struct gcframe* frame) {
 }
 
 void gc(void) {
-  DBG(printf("====================\nGC invoked\n"));
+  DBG(printf("GC INVOKED\n"));
   gcframe(topgcframe);
   heap = (heap == heapa) ? heapb : heapa;
   toheap = (heap == heapa) ? heapb : heapa;
@@ -211,16 +207,18 @@ cell str(char* s, int strlen) {
 #define symc(s) sym(s, strlen(s))
 cell sym(char* s, int strlen) { return cellasptr(str(s, strlen)) | TSYM; }
 
-char *getstr(cell strcell) {
-  assert(istype(strcell, TSTR) || istype(strcell, TSYM));
-  return ((struct buffer*)cellasptr(strcell))->data;
+struct bufinner { char* data; int len; };
+struct bufinner getstr(cell bufcell) {
+  assert(isbuftype(bufcell));
+  struct buffer* buf = (struct buffer*)cellasptr(bufcell);
+  return (struct bufinner){ buf->data, buf->stag >> 8 };
 }
 
 #define internc(s) intern(s, strlen(s))
 cell intern(char* s, int len) {
   cell rest = internlist;
   while (rest != nil) {
-    char* name = getstr(car(rest));
+    char* name = getstr(car(rest)).data;
     if ((len == strlen(name)) && !memcmp(name, s, len))
       return car(rest);
     rest = cdr(rest);
@@ -268,7 +266,7 @@ cell envlookup(cell sym, cell env) {
     cell globalpair = assoc(sym, globalenv);
     if (globalpair != nil)
       return cdr(globalpair);
-    printf("ERR unbound var: %s\n", getstr(sym));
+    printf("ERR unbound var: %s\n", getstr(sym).data);
     return nil;
   }
 
@@ -516,9 +514,9 @@ void printexpr(cell c) {
     printlist(c);
     printf(")");
   } else if ((c & TAG) == TSTR) {
-    printf("\"%s\"", getstr(c));
+    printf("\"%s\"", getstr(c).data);
   } else if ((c & TAG) == TSYM) {
-    printf("%s", getstr(c));
+    printf("%s", getstr(c).data);
   } else if ((c & TAG) == TSTAG) {
     cell* heapval = (cell*)cellasptr(c);
     struct closure* closure;
@@ -585,6 +583,22 @@ cell pdef(cell args) {
 }
 cell peq(cell args) { return (car(args) == cadr(args)) ? fix(1) : nil; }
 cell ppairlis(cell args) { return pairlis(car(args), cadr(args)); }
+cell pgetbuf(cell args) {
+  assert(isbuftype(car(args)) && isfix(cadr(args)));
+  struct bufinner b = getstr(car(args));
+  int index = cadr(args) >> 1;
+  assert(index < b.len);
+  return fix(getstr(car(args)).data[index]);
+}
+cell psetbuf(cell args) {
+  assert(isbuftype(car(args)) && isfix(cadr(args)));
+  struct bufinner b = getstr(car(args));
+  int index = cadr(args) >> 1;
+  assert(index < b.len);
+  int val = cadr(cdr(args)) >> 1;
+  getstr(car(args)).data[index] = val;
+  return fix(val);
+}
 
 void defprimitive(char* name, primitivefn fn) {
   globalenv = cons(cons(internc(name), prim(fn)), globalenv);
@@ -614,10 +628,8 @@ void repl(int bellsandwhistles) {
 }
 
 int main(int argc, char** argv) {
-  heapa = malloc(HEAPSIZE);
-  heapb = malloc(HEAPSIZE);
-  heap = heaptop = heapa;
-  toheap = toheaptop = heapb;
+  heapa = heap = heaptop = malloc(HEAPSIZE);
+  heapb = toheap = toheaptop = malloc(HEAPSIZE);
   nil = symc("nil");
   internlist = cons(nil, nil);
   globalenv = nil;
@@ -636,12 +648,13 @@ int main(int argc, char** argv) {
   defprimitive("def", pdef);
   defprimitive("eq", peq);
   defprimitive("pairlis", ppairlis);
+  defprimitive("getbuf", pgetbuf);
+  defprimitive("setbuf", psetbuf);
 
   if (argc <= 1) {
     printf("Nothing to do. `%s repl` for repl\n", argv[0]);
     return 0;
   }
-
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "repl")) {
       repl(1);
