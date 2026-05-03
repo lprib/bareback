@@ -448,11 +448,11 @@ cell readform(void) {
   }
 
   if (*text >= '0' && *text <= '9') {
-    int fix = 0;
+    int n = 0;
     while (*text >= '0' && *text <= '9') {
-      fix = (fix * 10) + (*text++ - '0');
+      n = (n * 10) + (*text++ - '0');
     }
-    return (cell)(fix << 1);
+    return fix(n);
   }
 
   if (*text == '\'') {
@@ -509,7 +509,7 @@ void printexpr(cell c) {
   }
 
   if ((c & FIXTAG) == FIX) {
-    printf("%ld", c >> 1);
+    printf("%ld", getfix(c));
   } else if ((c & TAG) == TCONS) {
     printf("(");
     printlist(c);
@@ -558,15 +558,15 @@ void println(cell c) {
 cell pplus(cell args) {
   if (args == nil) return fix(0);
   assert((car(args) & FIXTAG) == FIX);
-  return fix((car(args)>>1) + (pplus(cdr(args))>>1));
+  return fix(getfix(car(args)) + getfix(pplus(cdr(args))));
 }
 cell ptimes(cell args) {
   if (args == nil) return fix(1);
   assert((car(args) & FIXTAG) == FIX);
-  return fix((car(args)>>1) * (ptimes(cdr(args))>>1));
+  return fix(getfix(car(args)) * getfix(ptimes(cdr(args))));
 }
 cell pminus(cell args) {
-  return fix((car(args)>>1) - (cadr(args)>>1));
+  return fix(getfix(car(args)) - getfix(cadr(args)));
 }
 cell pcons(cell args) { return cons(car(args), cadr(args)); }
 cell pcar(cell args) { return car(car(args)); }
@@ -595,22 +595,22 @@ cell ppairlis(cell args) { return pairlis(car(args), cadr(args)); }
 cell pgetbuf(cell args) {
   assert(isbuftype(car(args)) && isfix(cadr(args)));
   struct bufinner b = getstr(car(args));
-  int index = cadr(args) >> 1;
+  int index = getfix(cadr(args));
   assert(index < b.len);
   return fix(getstr(car(args)).data[index]);
 }
 cell psetbuf(cell args) {
   assert(isbuftype(car(args)) && isfix(cadr(args)));
   struct bufinner b = getstr(car(args));
-  int index = cadr(args) >> 1;
+  int index = getfix(cadr(args));
   assert(index < b.len);
-  int val = cadr(cdr(args)) >> 1;
+  int val = getfix(cadr(cdr(args)));
   getstr(car(args)).data[index] = val;
   return fix(val);
 }
 cell pbuflen(cell args) {
   assert(isbuftype(car(args)));
-  return (((struct buffer*)cellasptr(car(args)))->stag >> 8) << 1;
+  return fix(((struct buffer*)cellasptr(car(args)))->stag >> 8);
 }
 cell preadfile(cell args) {
   char* filename = getstr(car(args)).data;
