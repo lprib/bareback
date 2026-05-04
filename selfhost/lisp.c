@@ -603,7 +603,7 @@ cell psetbuf(cell args) {
   assert(index < b.len);
   int val = getfix(cadr(cdr(args)));
   getstr(car(args)).data[index] = val;
-  return fix(val);
+  return car(args);
 }
 cell pbuflen(cell args) {
   assert(isptrtype(car(args)));
@@ -634,6 +634,26 @@ cell pwritefile(cell args) {
     return nil;
   }
   return fix(1);
+}
+cell ptypeof(cell args) { return fix(car(args) & TAGMASK); }
+cell pastype(cell args) {
+  assert(isfix(cadr(args)));
+  return (car(args) & ~TAGMASK) | getfix(cadr(args));
+}
+cell ptypeofheap(cell args) {
+  assert(ishhptrtype(car(args)));
+  return fix(*(cell*)asptr(car(args)) & HHMASK);
+}
+cell psetheaptype(cell args) {
+  assert(ishhptrtype(car(args)));
+  assert(isfix(cadr(args)));
+  cell* ptr = (cell*)asptr(car(args));
+  *ptr = (*ptr & ~HHMASK) | getfix(cadr(args));
+  return car(args);
+}
+cell pbuffer(cell args) {
+  assert(isfix(car(args)));
+  return buffer(getfix(car(args)));
 }
 
 void defprimitive(char* name, primitivefn fn) {
@@ -689,6 +709,11 @@ int main(int argc, char** argv) {
   defprimitive("buflen", pbuflen);
   defprimitive("readfile", preadfile);
   defprimitive("writefile", pwritefile);
+  defprimitive("typeof", ptypeof);
+  defprimitive("astype", pastype);
+  defprimitive("typeofheap", ptypeofheap);
+  defprimitive("setheaptype", psetheaptype);
+  defprimitive("buffer", pbuffer);
 
   if (argc <= 1) {
     printf("Nothing to do. `%s repl` for repl\n", argv[0]);

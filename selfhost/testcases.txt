@@ -226,12 +226,8 @@ case setbuf
 > (def 'buffer "aA$")
 = nil
 > (setbuf buffer 0 98)
-= 98
-> buffer
 = "bA$"
 > (setbuf buffer 1 66)
-= 66
-> buffer
 = "bB$"
 
 case buflen
@@ -239,3 +235,30 @@ case buflen
 = nil
 > (buflen buffer)
 = 4
+
+case makebuffer
+> (buffer 2)
+= #<buf 00 00>
+
+case typeof
+> (typeof (cons 1 2))
+= 2
+> (typeof 'symbol)
+= 3
+> (typeof 1)
+= 4
+> (typeof (fn (x) x))
+= 6
+> (typeof +)
+= 6
+> (typeof (buffer 1))
+= 6
+> (typeof "str")
+= 6
+
+case astype
+> (astype "string" 3)
+= string
+
+case buf2str
+> 
