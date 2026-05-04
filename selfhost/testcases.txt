@@ -5,11 +5,15 @@ case integer
 = 314
 
 case intmax
-> 1073741823
-= 1073741823
+> 536870911
+= 536870911
 
-case intmin
-> 2147483647
+case intunderflow
+> 536870912
+= -536870912
+
+case intoverflow
+> 1073741823
 = -1
 
 case symbol

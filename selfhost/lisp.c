@@ -8,36 +8,33 @@
 
 #define HEAPALIGN 0x8 // 3byte tag = 8 byte align
 
-// TAG for fix is single low bit of zero
-#define FIXTAG  0x1 // mask
-#define FIX     0x0 // fixed int
+#define TAGMASK 0b111
+#define FIXEVEN 0b000 // b0:1 = 0 => FIX
+#define UNUSED1 0b001 // b1 = 0 => IMMEDIATE TYPE
+#define CONS    0b010 // b1 = 1 => POINTER TYPE
+#define SYMBOL  0b011 // b1 = 1 => POINTER TYPE
+#define FIXODD  0b100 // b0:1 = 0 => FIX
+#define UNUSED2 0b101 // b1 = 0 => IMMEDIATE TYPE
+#define HEAPPTR 0b110 // b1 = 1 => POINTER TYPE
+#define UNUSED3 0b111 // b1 = 1 => POINTER TYPE
 
-#define TAG     0x7 // (mask)
-#define TCONS   0x1 // cons
-#define TSYM    0x3 // symbol, actually stag
-#define TSTR    0x5 // string, actually stag
-#define TSTAG   0x7 // self tagged heap pointer
-
-// STAG (self-tagged): any TSTAG value must point to a heap allocation with a
-// one-cell header: [ lengthbytes << 8 | STAG ]. When GCing, always round up
-// lengthbtyes to sizeof(cell)
-#define STAG    0xff // (mask)
-#define STCLOS  0x00 // lisp closure
-#define STPRIM  0x01 // primitive function
-#define STBUF   0x02 // generic buffer
+#define HHMASK  0xff
+#define HHCLOS  0x00
+#define HHPRIM  0x01
+#define HHBUF   0x02
+#define HHSTR   0x03
 
 typedef long cell;
 typedef cell (*primitivefn) (cell args);
 struct cons { cell car, cdr; };
-struct primitive { cell stag; primitivefn fn; };
-struct closure { cell stag, argnames, body, env; };
-struct buffer { cell stag; char data[]; };
-#define istype(_cell, _type) (((_cell) & TAG) == (_type))
-#define isbuftype(_cell) (istype((_cell), TSYM) || istype((_cell), TSTR) || istype((_cell), TSTAG))
-#define isfix(_cell) (((_cell) & FIXTAG) == FIX)
-#define cellasptr(_cell) ((_cell) & ~TAG)
-// ASSUMPTION: all values with low bit set are pointers
-#define isptrtype(_cell) (((_cell) & 1) == 1)
+struct primitive { cell hh; primitivefn fn; };
+struct closure { cell hh, argnames, body, env; };
+struct buffer { cell hh; char data[]; };
+#define istype(_cell, _type) (((_cell) & TAGMASK) == (_type))
+#define isfix(_cell) (istype((_cell), FIXEVEN) || istype((_cell), FIXODD))
+#define asptr(_cell) ((_cell) & ~TAGMASK)
+#define isptrtype(_cell) (((_cell) & 0b010) != 0)
+#define ishhptrtype(_cell) (isptrtype(_cell) && !istype(_cell, CONS))
 cell internlist; // lisp list of symbols that are intened
 cell nil; // nil symbol
 cell globalenv; // global environment lisp alist
@@ -107,33 +104,33 @@ void moveimm(cell* imm) {
   if (!isptrtype(*imm))
     return;
 
-  cell* pointer = (cell*)cellasptr(*imm);
+  cell* pointer = (cell*)asptr(*imm);
   if (isforwarded(pointer)) {
     DBG(printf("moveimm already fwd ")); DBG(printexpr(*imm)); DBG(printf("\n"));
     // (*imm) is a pointer immediate that points to old heap location. That old
     // heap location contains a pointer to it's new residence in the toheap
-    *imm = (*imm & TAG) | *pointer; // replace imm with forward pointer
+    *imm = (*imm & TAGMASK) | *pointer; // replace imm with forward pointer
     return;
   }
 
   DBG(printf("moveimm ")); DBG(printexpr(*imm)); DBG(printf("\n"));
-  if (istype(*imm, TCONS)) {
-    struct cons* oldcons = (struct cons*)cellasptr(*imm);
+  if (istype(*imm, CONS)) {
+    struct cons* oldcons = (struct cons*)asptr(*imm);
     struct cons* newcons = alloc(sizeof(struct cons)/sizeof(cell), &toheaptop);
     newcons->car = oldcons->car;
     newcons->cdr = oldcons->cdr;
     *gcworkstacktop++ = &newcons->cdr;
     *gcworkstacktop++ = &newcons->car;
     markforwarded(pointer, newcons);
-    *imm = (*imm & TAG) | (cell)(newcons);
-  } else if (isbuftype(*imm)) {
-    cell stag = *(cell*)cellasptr(*imm);
+    *imm = (*imm & TAGMASK) | (cell)(newcons);
+  } else if (isptrtype(*imm)) {
+    cell stag = *(cell*)asptr(*imm);
     int lencells = ((stag >> 8) + sizeof(cell) - 1) / sizeof(cell);
     cell* new = alloc(lencells + 1, &toheaptop);
     memcpy(new, pointer, (lencells + 1)*sizeof(cell));
     markforwarded(pointer, new);
-    *imm = (*imm & TAG) | (cell)new;
-    if ((stag & STAG) == STCLOS) {
+    *imm = (*imm & TAGMASK) | (cell)new;
+    if ((stag & HHMASK) == HHCLOS) {
       *gcworkstacktop++ = &((struct closure*)new)->argnames;
       *gcworkstacktop++ = &((struct closure*)new)->body;
       *gcworkstacktop++ = &((struct closure*)new)->env;
@@ -169,50 +166,52 @@ cell cons(cell car, cell cdr) {
   struct cons* cns = alloc(sizeof(struct cons)/sizeof(cell), &heaptop);
   cns->car = car;
   cns->cdr = cdr;
-  return ((cell)cns) | TCONS;
+  return ((cell)cns) | CONS;
 }
 
 cell car(cell cons) {
   if (cons == nil) return nil;
-  assert(istype(cons, TCONS));
-  return ((struct cons*)cellasptr(cons))->car;
+  assert(istype(cons, CONS));
+  return ((struct cons*)asptr(cons))->car;
 }
 
 cell cdr(cell cons) {
   if (cons == nil) return nil;
-  assert(istype(cons, TCONS));
-  return ((struct cons*)cellasptr(cons))->cdr;
+  assert(istype(cons, CONS));
+  return ((struct cons*)asptr(cons))->cdr;
 }
 
 #define cadr(_cons) car(cdr(_cons))
-#define fix(_n) ((cell)((_n) << 1))
-#define getfix(_n) ((_n) >> 1)
+#define fix(_n) ((cell)((_n) << 2))
+#define getfix(_n) ((_n) >> 2)
 
 cell buffer(int lenbytes) {
   int capcells = (lenbytes + sizeof(cell) - 1) / sizeof(cell);
   struct buffer* buf = alloc(sizeof(struct buffer)/sizeof(cell) + capcells, &heaptop);
   assert(lenbytes < (1<<24));
-  buf->stag = lenbytes << 8 | STBUF;
-  return (cell)buf | TSTAG;
+  buf->hh = lenbytes << 8 | HHBUF;
+  return (cell)buf | HEAPPTR;
 }
 
 #define strc(s) str(s, strlen(s))
 cell str(char* s, int strlen) {
   cell bufcell = buffer(strlen+1);
-  struct buffer* buf = (struct buffer*)cellasptr(bufcell);
+  struct buffer* buf = (struct buffer*)asptr(bufcell);
   memcpy(buf->data, s, strlen);
   buf->data[strlen] = '\0';
-  return cellasptr(bufcell) | TSTR;
+  buf->hh = (buf->hh & ~HHMASK) | HHSTR;
+  return bufcell;
 }
 
 #define symc(s) sym(s, strlen(s))
-cell sym(char* s, int strlen) { return cellasptr(str(s, strlen)) | TSYM; }
+cell sym(char* s, int strlen) { return asptr(str(s, strlen)) | SYMBOL; }
 
 struct bufinner { char* data; int len; };
 struct bufinner getstr(cell bufcell) {
-  assert(isbuftype(bufcell));
-  struct buffer* buf = (struct buffer*)cellasptr(bufcell);
-  return (struct bufinner){ buf->data, buf->stag >> 8 };
+  assert(ishhptrtype(bufcell));
+  struct buffer* buf = (struct buffer*)asptr(bufcell);
+  assert(((buf->hh & HHMASK) == HHBUF) || ((buf->hh & HHMASK) == HHSTR));
+  return (struct bufinner){ buf->data, buf->hh >> 8 };
 }
 
 #define internc(s) intern(s, strlen(s))
@@ -224,25 +223,24 @@ cell intern(char* s, int len) {
       return car(rest);
     rest = cdr(rest);
   }
-  // make new
   internlist = cons(sym(s, len), internlist);
   return car(internlist);
 }
 
 cell prim(primitivefn fn) {
   struct primitive* primitive = alloc(sizeof(struct primitive) / sizeof(cell), &heaptop);
-  primitive->stag = (sizeof(struct primitive) - sizeof(cell)) << 8 | STPRIM;
+  primitive->hh = (sizeof(struct primitive) - sizeof(cell)) << 8 | HHPRIM;
   primitive->fn = fn;
-  return (cell)primitive | TSTAG;
+  return (cell)primitive | HEAPPTR;
 }
 
 cell closure(cell argnames, cell body, cell env) {
   struct closure* closure = alloc(sizeof(struct closure)/sizeof(cell), &heaptop);
-  closure->stag = (sizeof(struct closure) - sizeof(cell)) << 8 | STCLOS;
+  closure->hh = (sizeof(struct closure) - sizeof(cell)) << 8 | HHCLOS;
   closure->argnames = argnames;
   closure->body = body;
   closure->env = env;
-  return (cell)closure | TSTAG;
+  return (cell)closure | HEAPPTR;
 }
 
 cell assoc(cell key, cell alist) {
@@ -333,13 +331,9 @@ cell apply(cell proc, cell args);
 cell eval(cell expr, cell env) {
   cell res = nil;
 
-  if (isfix(expr)) {
-    res = expr;
-  } else if (istype(expr, TSTR)) {
-    res = expr;
-  } else if (istype(expr, TSYM)) {
+  if (istype(expr, SYMBOL)) {
     res = envlookup(expr, env);
-  } else if (istype(expr, TCONS)) {
+  } else if (istype(expr, CONS)) {
     cell fn = nil;
     cell args = nil;
     GCPROTECT(&expr, &env, &fn, &args);
@@ -359,6 +353,8 @@ cell eval(cell expr, cell env) {
       res = apply(fn, args);
     }
     ENDGCPROTECT();
+  } else {
+    res = expr; // everything else is self-evaluating
   }
 
   return res;
@@ -366,13 +362,13 @@ cell eval(cell expr, cell env) {
 
 // CALLERS MUST GCPROTECT THEIR LOCALS
 cell apply(cell proc, cell args) {
-  if ((proc & TAG) == TSTAG) {
-    cell* heapval = (cell*)cellasptr(proc);
-    if ((heapval[0] & STAG) == STPRIM) {
-      struct primitive* primitive = (struct primitive*)heapval;
+  if ((proc & TAGMASK) == HEAPPTR) {
+    cell* ptr = (cell*)asptr(proc);
+    if ((*ptr & HHMASK) == HHPRIM) {
+      struct primitive* primitive = (struct primitive*)ptr;
       return primitive->fn(args);
-    } else if ((heapval[0] & STAG) == STCLOS) {
-      struct closure* closure = (struct closure*)heapval;
+    } else if ((*ptr & HHMASK) == HHCLOS) {
+      struct closure* closure = (struct closure*)ptr;
       cell envframe = pairlis(closure->argnames, args);
       return progn(closure->body, cons(envframe, closure->env));
     }
@@ -491,7 +487,7 @@ void printlist(cell c) {
   cell thecdr = cdr(c);
   if (thecdr == nil) {
     //end of proper list
-  } else if ((thecdr & TAG) == TCONS) {
+  } else if (istype(thecdr, CONS)) {
     printf(" ");
     printlist(thecdr);
   } else {
@@ -502,47 +498,48 @@ void printlist(cell c) {
 
 void printexpr(cell c) {
   // print GC forwarded values
-  if (isptrtype(c) && isinmainheap((void*)cellasptr(c)) && isforwarded((void*)cellasptr(c))){
+  if (isptrtype(c) && isinmainheap((void*)asptr(c)) && isforwarded((void*)asptr(c))){
     printf("fwd:");
-    cell fwdptrvalue = *((cell*)cellasptr(c));
-    c = (c & TAG) | fwdptrvalue; // replace pointer part
+    c = (c & TAGMASK) | (*((cell*)asptr(c))); // replace pointer part
   }
 
-  if ((c & FIXTAG) == FIX) {
+  if (isfix(c)) {
     printf("%ld", getfix(c));
-  } else if ((c & TAG) == TCONS) {
+  } else if (istype(c, CONS)) {
     printf("(");
     printlist(c);
     printf(")");
-  } else if ((c & TAG) == TSTR) {
-    printf("\"%s\"", getstr(c).data);
-  } else if ((c & TAG) == TSYM) {
+  } else if (istype(c, SYMBOL)) {
     printf("%s", getstr(c).data);
-  } else if ((c & TAG) == TSTAG) {
-    cell* ptr = (cell*)cellasptr(c);
+  } else if (istype(c, HEAPPTR)) {
+    cell* ptr = (cell*)asptr(c);
     struct closure* closure;
     struct buffer* buf;
-    switch(ptr[0] & STAG) {
-      case STBUF:
+    switch(*ptr & HHMASK) {
+      case HHCLOS:
+        closure = (struct closure*)ptr;
+        printf("#<clos ");
+        printexpr(closure->argnames);
+        printf(" ");
+        printexpr(closure->body);
+        printf(" ");
+        printexpr(closure->env);
+        printf(">");
+        break;
+      case HHPRIM:
+        printf("#<prim %lx>", asptr(ptr[1]));
+        break;
+      case HHBUF:
         buf = (struct buffer*)ptr;
         printf("#<buf");
-        for(char* c = buf->data; c < (buf->data + (buf->stag >> 8)); c++)
+        for(char* c = buf->data; c < (buf->data + (buf->hh >> 8)); c++)
           printf(" %02x", (int)*c);
         printf(">");
         break;
-      case STPRIM:
-        printf("#<prim %lx>", cellasptr(ptr[1]));
+      case HHSTR:
+        printf("\"%s\"", getstr(c).data);
         break;
-      case STCLOS:
-         closure = (struct closure*)ptr;
-         printf("#<clos ");
-         printexpr(closure->argnames);
-         printf(" ");
-         printexpr(closure->body);
-         printf(" ");
-         printexpr(closure->env);
-         printf(">");
-        break;
+      default: printf("?"); break;
     }
   }
 }
@@ -557,12 +554,12 @@ void println(cell c) {
 
 cell pplus(cell args) {
   if (args == nil) return fix(0);
-  assert((car(args) & FIXTAG) == FIX);
+  assert(isfix(car(args)));
   return fix(getfix(car(args)) + getfix(pplus(cdr(args))));
 }
 cell ptimes(cell args) {
   if (args == nil) return fix(1);
-  assert((car(args) & FIXTAG) == FIX);
+  assert(isfix(car(args)));
   return fix(getfix(car(args)) * getfix(ptimes(cdr(args))));
 }
 cell pminus(cell args) {
@@ -572,13 +569,13 @@ cell pcons(cell args) { return cons(car(args), cadr(args)); }
 cell pcar(cell args) { return car(car(args)); }
 cell pcdr(cell args) { return cdr(car(args)); }
 cell psetcar(cell args) {
-  assert(istype(car(args), TCONS));
-  ((struct cons*)cellasptr(car(args)))->car = cadr(args);
+  assert(istype(car(args), CONS));
+  ((struct cons*)asptr(car(args)))->car = cadr(args);
   return car(args);
 }
 cell psetcdr(cell args) {
-  assert(istype(car(args), TCONS));
-  ((struct cons*)cellasptr(car(args)))->cdr = cadr(args);
+  assert(istype(car(args), CONS));
+  ((struct cons*)asptr(car(args)))->cdr = cadr(args);
   return car(args);
 }
 cell pprint(cell args) {
@@ -593,14 +590,14 @@ cell pdef(cell args) {
 cell peq(cell args) { return (car(args) == cadr(args)) ? fix(1) : nil; }
 cell ppairlis(cell args) { return pairlis(car(args), cadr(args)); }
 cell pgetbuf(cell args) {
-  assert(isbuftype(car(args)) && isfix(cadr(args)));
+  assert(isptrtype(car(args)) && isfix(cadr(args)));
   struct bufinner b = getstr(car(args));
   int index = getfix(cadr(args));
   assert(index < b.len);
   return fix(getstr(car(args)).data[index]);
 }
 cell psetbuf(cell args) {
-  assert(isbuftype(car(args)) && isfix(cadr(args)));
+  assert(isptrtype(car(args)) && isfix(cadr(args)));
   struct bufinner b = getstr(car(args));
   int index = getfix(cadr(args));
   assert(index < b.len);
@@ -609,8 +606,8 @@ cell psetbuf(cell args) {
   return fix(val);
 }
 cell pbuflen(cell args) {
-  assert(isbuftype(car(args)));
-  return fix(((struct buffer*)cellasptr(car(args)))->stag >> 8);
+  assert(isptrtype(car(args)));
+  return fix(((struct buffer*)asptr(car(args)))->hh >> 8);
 }
 cell preadfile(cell args) {
   char* filename = getstr(car(args)).data;
@@ -619,7 +616,7 @@ cell preadfile(cell args) {
   long filesize;
   fseek(f, 0, SEEK_END); filesize = ftell(f); rewind(f);
   cell bufcell = buffer(filesize+1);
-  struct buffer* buf = (struct buffer*)cellasptr(bufcell);
+  struct buffer* buf = (struct buffer*)asptr(bufcell);
   fread(buf->data, 1, filesize, f);
   fclose(f);
   buf->data[filesize] = '\0';
@@ -627,12 +624,12 @@ cell preadfile(cell args) {
 }
 cell pwritefile(cell args) {
   char* filename = getstr(car(args)).data;
-  struct buffer* buf = (struct buffer*)cellasptr(cadr(args));
+  struct buffer* buf = (struct buffer*)asptr(cadr(args));
   FILE* f = fopen(filename, "w");
   if (!f) { printf("cannot open %s\n", filename); return nil; }
-  int written = fwrite(buf->data, 1, buf->stag >> 8, f);
+  int written = fwrite(buf->data, 1, buf->hh >> 8, f);
   fclose(f);
-  if (written != buf->stag >> 8) {
+  if (written != buf->hh >> 8) {
     printf("failed to write to %s\n", filename);
     return nil;
   }
